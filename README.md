@@ -1,4 +1,4 @@
-# DuckDB Parser Extension
+# poached
 
 A DuckDB extension that exposes SQL parsing functionality for building IDEs, SQL editors, query analyzers, and other developer tools.
 
