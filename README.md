@@ -126,3 +126,6 @@ The `Makefile` controls build settings:
 - `USE_UNSTABLE_C_API` - Set to 1 for latest API features (pins to exact DuckDB version)
 
 When changing versions, run `make update_duckdb_headers` to sync the C API headers.
+
+## License
+MIT License. See [LICENSE](LICENSE) for details.
