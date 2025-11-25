@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5...3.29)
+cmake_minimum_required(VERSION 3.11...3.29)
 option(DUCKDB_WASM_EXTENSION "Whether compiling for Wasm target" OFF)
 
 ###
@@ -21,6 +21,22 @@ add_definitions(-DDUCKDB_EXTENSION_NAME=${EXTENSION_NAME})
 
 if (DEFINED DUCKDB_EXTENSION_API_VERSION_UNSTABLE)
     add_definitions(-DDUCKDB_EXTENSION_API_VERSION_UNSTABLE=${DUCKDB_EXTENSION_API_VERSION_UNSTABLE})
+endif()
+
+###
+# Download DuckDB source for C++ headers only (needed for tokenizer)
+# Using FetchContent_Populate to avoid building DuckDB
+###
+include(FetchContent)
+set(DUCKDB_VERSION "v1.4.2")
+FetchContent_Declare(
+    duckdb_src
+    URL https://github.com/duckdb/duckdb/archive/refs/tags/${DUCKDB_VERSION}.zip
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_GetProperties(duckdb_src)
+if(NOT duckdb_src_POPULATED)
+    FetchContent_Populate(duckdb_src)
 endif()
 
 ###
@@ -58,18 +74,19 @@ target_include_directories(${EXTENSION_NAME} PRIVATE src/include)
 # Include DuckDB C API headers
 target_include_directories(${EXTENSION_NAME} PRIVATE duckdb_capi)
 
-# Include DuckDB C++ headers and link library (for tokenizer)
-# Try vcpkg first, then fall back to system paths
+# Include DuckDB source headers (for tokenizer)
+target_include_directories(${EXTENSION_NAME} PRIVATE ${duckdb_src_SOURCE_DIR}/src/include)
+
+# Link against libduckdb (for tokenizer implementation)
+# Try vcpkg first (for CI), then fall back to system paths (for local dev)
 find_package(duckdb CONFIG QUIET)
 if(TARGET duckdb::duckdb)
     target_link_libraries(${EXTENSION_NAME} PRIVATE duckdb::duckdb)
 else()
-    find_path(DUCKDB_INCLUDE_DIR duckdb.hpp HINTS /opt/homebrew/include /usr/local/include)
     find_library(DUCKDB_LIBRARY duckdb HINTS /opt/homebrew/lib /usr/local/lib)
-    if(DUCKDB_INCLUDE_DIR AND DUCKDB_LIBRARY)
-        target_include_directories(${EXTENSION_NAME} PRIVATE ${DUCKDB_INCLUDE_DIR})
+    if(DUCKDB_LIBRARY)
         target_link_libraries(${EXTENSION_NAME} PRIVATE ${DUCKDB_LIBRARY})
     else()
-        message(WARNING "DuckDB not found - tokenize_sql will not work")
+        message(WARNING "libduckdb not found - tokenize_sql will fail at runtime")
     endif()
 endif()

@@ -1,3 +1,4 @@
+// DuckDB headers (from full source via FetchContent)
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/simplified_token.hpp"
 
