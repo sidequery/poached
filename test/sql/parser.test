@@ -150,13 +150,39 @@ SELECT parse_function_names('SELECT 1')
 # sql_parse_json(query) -> VARCHAR (JSON)
 # -----------------------------------------------------------------------------
 
-query I
+# Valid query returns error=false
+query T
 SELECT json_extract_string(sql_parse_json('SELECT 1'), '$.error')
 ----
 false
 
+# Can extract plan type
+query T
+SELECT json_extract_string(sql_parse_json('SELECT 1'), '$.plans[0].type')
+----
+LOGICAL_PROJECTION
+
+# Can extract expression info
+query T
+SELECT json_extract_string(sql_parse_json('SELECT 1 + 2 AS result'), '$.plans[0].expressions[0].alias')
+----
+result
+
+# Can extract function name from expression
+query T
+SELECT json_extract_string(sql_parse_json('SELECT 1 + 2'), '$.plans[0].expressions[0].name')
+----
++
+
+# Invalid query returns error=true
+query T
+SELECT json_extract_string(sql_parse_json('INVALID SQL'), '$.error')
+----
+true
+
+# Invalid query includes error message
 query I
-SELECT sql_parse_json('INVALID') LIKE '%error%'
+SELECT json_extract_string(sql_parse_json('INVALID SQL'), '$.error_message') LIKE '%syntax error%'
 ----
 true
 

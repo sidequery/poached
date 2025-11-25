@@ -71,6 +71,27 @@ SELECT * FROM parse_columns('SELECT 1 AS num, ''hello'' AS str', 0);
 │         0 │ num      │ INTEGER  │
 │         1 │ str      │ VARCHAR  │
 └───────────┴──────────┴──────────┘
+
+-- Get full query plan as JSON
+SELECT sql_parse_json('SELECT 1 + 2 AS result');
+-- Returns:
+-- {
+--   "error": false,
+--   "plans": [{
+--     "type": "LOGICAL_PROJECTION",
+--     "expressions": [{
+--       "alias": "result",
+--       "name": "+",
+--       "return_type": {"id": "INTEGER"},
+--       "children": [...]
+--     }],
+--     "children": [{"type": "LOGICAL_DUMMY_SCAN"}]
+--   }]
+-- }
+
+-- Extract specific info from query plan
+SELECT json_extract_string(sql_parse_json('SELECT 1 + 2 AS x'), '$.plans[0].expressions[0].alias');
+-- Returns: x
 ```
 
 ## Building
