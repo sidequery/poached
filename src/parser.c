@@ -201,7 +201,7 @@ static void ParseStatementsBindDataDestroy(void *data) {
 			duckdb_close(&bind->db);
 		}
 		if (bind->query) {
-			free(bind->query);
+			duckdb_free(bind->query);
 		}
 		free(bind);
 	}
@@ -366,7 +366,7 @@ static void ParseParamsBindDataDestroy(void *data) {
 			duckdb_close(&bind->db);
 		}
 		if (bind->query) {
-			free(bind->query);
+			duckdb_free(bind->query);
 		}
 		free(bind);
 	}
@@ -502,7 +502,7 @@ static void ParseColumnsBindDataDestroy(void *data) {
 			duckdb_close(&bind->db);
 		}
 		if (bind->query) {
-			free(bind->query);
+			duckdb_free(bind->query);
 		}
 		free(bind);
 	}
@@ -725,7 +725,7 @@ static void ParseTypeBindDataDestroy(void *data) {
 			duckdb_close(&bind->db);
 		}
 		if (bind->query) {
-			free(bind->query);
+			duckdb_free(bind->query);
 		}
 		free(bind);
 	}
@@ -875,7 +875,7 @@ static void ParseColumnTypesBindDataDestroy(void *data) {
 			duckdb_close(&bind->db);
 		}
 		if (bind->query) {
-			free(bind->query);
+			duckdb_free(bind->query);
 		}
 		free(bind);
 	}
