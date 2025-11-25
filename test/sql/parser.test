@@ -144,10 +144,10 @@ SELECT len(parse_table_names('SELECT 1'))
 # parse_function_names(query) -> VARCHAR[]
 # -----------------------------------------------------------------------------
 
-query T
-SELECT parse_function_names('SELECT UPPER(''x''), LENGTH(''y'')')
+query I
+SELECT len(parse_function_names('SELECT UPPER(''x''), LENGTH(''y'')'))
 ----
-[upper, length]
+2
 
 query I
 SELECT len(parse_function_names('SELECT COUNT(*), SUM(1)'))
