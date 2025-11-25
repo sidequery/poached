@@ -1808,76 +1808,57 @@ static void ParseFunctionNamesFunction(duckdb_function_info info, duckdb_data_ch
 		entries[row].length = 0;
 
 		if (have_conn) {
+			// Build query that uses JSON functions to extract function names
 			size_t sql_len = strlen(sql);
-			size_t escaped_size = sql_len * 2 + 100;
-			char *escaped_query = (char *)malloc(escaped_size);
+			size_t query_size = sql_len * 2 + 500;
+			char *query = (char *)malloc(query_size);
 			size_t j = 0;
-			j += snprintf(escaped_query + j, escaped_size - j, "SELECT json_serialize_plan('");
-			for (size_t i = 0; i < sql_len && j < escaped_size - 10; i++) {
+			j += snprintf(query + j, query_size - j,
+				"WITH plan AS (SELECT json_serialize_plan('");
+			for (size_t i = 0; i < sql_len && j < query_size - 200; i++) {
 				if (sql[i] == '\'') {
-					escaped_query[j++] = '\'';
-					escaped_query[j++] = '\'';
+					query[j++] = '\'';
+					query[j++] = '\'';
 				} else {
-					escaped_query[j++] = sql[i];
+					query[j++] = sql[i];
 				}
 			}
-			j += snprintf(escaped_query + j, escaped_size - j, "')");
+			j += snprintf(query + j, query_size - j,
+				"') as j) "
+				"SELECT DISTINCT json_extract_string(t.value, '$.name') as name "
+				"FROM plan, json_tree(j) t "
+				"WHERE json_extract_string(t.value, '$.expression_class') IN ('BOUND_AGGREGATE', 'BOUND_FUNCTION') "
+				"  AND json_extract_string(t.value, '$.name') IS NOT NULL");
 
 			duckdb_result result;
-			if (duckdb_query(conn, escaped_query, &result) == DuckDBSuccess) {
-				char *plan_json = GetResultString(&result);
-				if (plan_json) {
-					idx_t func_count = 0;
-					const char *pos = plan_json;
-
-					// Find BOUND_AGGREGATE functions
-					while ((pos = strstr(pos, "\"expression_class\":\"BOUND_AGGREGATE\"")) != NULL) {
-						const char *name_start = strstr(pos, "\"name\":\"");
-						if (name_start && name_start < pos + 500) {
-							name_start += 8;
-							const char *name_end = strchr(name_start, '"');
-							if (name_end) {
-								size_t len = name_end - name_start;
-								char *name = (char *)malloc(len + 1);
-								memcpy(name, name_start, len);
-								name[len] = '\0';
-								duckdb_list_vector_set_size(output, list_offset + func_count + 1);
-								duckdb_vector_assign_string_element(child, list_offset + func_count, name);
-								func_count++;
-								free(name);
-							}
-						}
-						pos++;
+			if (duckdb_query(conn, query, &result) == DuckDBSuccess) {
+				idx_t func_count = 0;
+				duckdb_data_chunk chunk;
+				while ((chunk = duckdb_fetch_chunk(result)) != NULL) {
+					idx_t chunk_size = duckdb_data_chunk_get_size(chunk);
+					if (chunk_size == 0) {
+						duckdb_destroy_data_chunk(&chunk);
+						break;
 					}
+					duckdb_vector name_vec = duckdb_data_chunk_get_vector(chunk, 0);
+					duckdb_string_t *name_data = (duckdb_string_t *)duckdb_vector_get_data(name_vec);
 
-					// Find BOUND_FUNCTION calls
-					pos = plan_json;
-					while ((pos = strstr(pos, "\"expression_class\":\"BOUND_FUNCTION\"")) != NULL) {
-						const char *name_start = strstr(pos, "\"name\":\"");
-						if (name_start && name_start < pos + 500) {
-							name_start += 8;
-							const char *name_end = strchr(name_start, '"');
-							if (name_end) {
-								size_t len = name_end - name_start;
-								char *name = (char *)malloc(len + 1);
-								memcpy(name, name_start, len);
-								name[len] = '\0';
-								duckdb_list_vector_set_size(output, list_offset + func_count + 1);
-								duckdb_vector_assign_string_element(child, list_offset + func_count, name);
-								func_count++;
-								free(name);
-							}
+					for (idx_t i = 0; i < chunk_size; i++) {
+						char *name = GetString(name_data, i);
+						if (name) {
+							duckdb_list_vector_set_size(output, list_offset + func_count + 1);
+							duckdb_vector_assign_string_element(child, list_offset + func_count, name);
+							func_count++;
+							free(name);
 						}
-						pos++;
 					}
-
-					entries[row].length = func_count;
-					list_offset += func_count;
-					free(plan_json);
+					duckdb_destroy_data_chunk(&chunk);
 				}
+				entries[row].length = func_count;
+				list_offset += func_count;
 				duckdb_destroy_result(&result);
 			}
-			free(escaped_query);
+			free(query);
 		}
 
 		free(sql);
@@ -1927,47 +1908,6 @@ static void AddFunction(ParseFunctionsBindData *bind, const char *name, const ch
 	bind->count++;
 }
 
-static void ExtractFunctionsFromJson(ParseFunctionsBindData *bind, const char *json, const char *context) {
-	const char *pos = json;
-
-	// Find BOUND_AGGREGATE functions
-	while ((pos = strstr(pos, "\"expression_class\":\"BOUND_AGGREGATE\"")) != NULL) {
-		const char *name_start = strstr(pos, "\"name\":\"");
-		if (name_start && name_start < pos + 500) {
-			name_start += 8;
-			const char *name_end = strchr(name_start, '"');
-			if (name_end) {
-				size_t len = name_end - name_start;
-				char *name = (char *)malloc(len + 1);
-				memcpy(name, name_start, len);
-				name[len] = '\0';
-				AddFunction(bind, name, "aggregate");
-				free(name);
-			}
-		}
-		pos++;
-	}
-
-	// Find BOUND_FUNCTION calls
-	pos = json;
-	while ((pos = strstr(pos, "\"expression_class\":\"BOUND_FUNCTION\"")) != NULL) {
-		const char *name_start = strstr(pos, "\"name\":\"");
-		if (name_start && name_start < pos + 500) {
-			name_start += 8;
-			const char *name_end = strchr(name_start, '"');
-			if (name_end) {
-				size_t len = name_end - name_start;
-				char *name = (char *)malloc(len + 1);
-				memcpy(name, name_start, len);
-				name[len] = '\0';
-				AddFunction(bind, name, "scalar");
-				free(name);
-			}
-		}
-		pos++;
-	}
-}
-
 static void ParseFunctionsBind(duckdb_bind_info info) {
 	ParseFunctionsBindData *bind = (ParseFunctionsBindData *)malloc(sizeof(ParseFunctionsBindData));
 	memset(bind, 0, sizeof(ParseFunctionsBindData));
@@ -1979,31 +1919,59 @@ static void ParseFunctionsBind(duckdb_bind_info info) {
 	if (duckdb_open(NULL, &bind->db) == DuckDBSuccess &&
 	    duckdb_connect(bind->db, &bind->conn) == DuckDBSuccess) {
 
+		// Build query that uses JSON functions to extract function names
 		size_t sql_len = strlen(sql);
-		size_t escaped_size = sql_len * 2 + 100;
-		char *escaped_query = (char *)malloc(escaped_size);
+		size_t query_size = sql_len * 2 + 500;
+		char *query = (char *)malloc(query_size);
 		size_t j = 0;
-		j += snprintf(escaped_query + j, escaped_size - j, "SELECT json_serialize_plan('");
-		for (size_t i = 0; i < sql_len && j < escaped_size - 10; i++) {
+		j += snprintf(query + j, query_size - j,
+			"WITH plan AS (SELECT json_serialize_plan('");
+		for (size_t i = 0; i < sql_len && j < query_size - 200; i++) {
 			if (sql[i] == '\'') {
-				escaped_query[j++] = '\'';
-				escaped_query[j++] = '\'';
+				query[j++] = '\'';
+				query[j++] = '\'';
 			} else {
-				escaped_query[j++] = sql[i];
+				query[j++] = sql[i];
 			}
 		}
-		j += snprintf(escaped_query + j, escaped_size - j, "')");
+		j += snprintf(query + j, query_size - j,
+			"') as j) "
+			"SELECT DISTINCT "
+			"  json_extract_string(t.value, '$.name') as name, "
+			"  CASE WHEN json_extract_string(t.value, '$.expression_class') = 'BOUND_AGGREGATE' "
+			"       THEN 'aggregate' ELSE 'scalar' END as type "
+			"FROM plan, json_tree(j) t "
+			"WHERE json_extract_string(t.value, '$.expression_class') IN ('BOUND_AGGREGATE', 'BOUND_FUNCTION') "
+			"  AND json_extract_string(t.value, '$.name') IS NOT NULL");
 
 		duckdb_result result;
-		if (duckdb_query(bind->conn, escaped_query, &result) == DuckDBSuccess) {
-			char *plan_json = GetResultString(&result);
-			if (plan_json) {
-				ExtractFunctionsFromJson(bind, plan_json, "select");
-				free(plan_json);
+		if (duckdb_query(bind->conn, query, &result) == DuckDBSuccess) {
+			duckdb_data_chunk chunk;
+			while ((chunk = duckdb_fetch_chunk(result)) != NULL) {
+				idx_t row_count = duckdb_data_chunk_get_size(chunk);
+				if (row_count == 0) {
+					duckdb_destroy_data_chunk(&chunk);
+					break;
+				}
+				duckdb_vector name_vec = duckdb_data_chunk_get_vector(chunk, 0);
+				duckdb_vector type_vec = duckdb_data_chunk_get_vector(chunk, 1);
+				duckdb_string_t *name_data = (duckdb_string_t *)duckdb_vector_get_data(name_vec);
+				duckdb_string_t *type_data = (duckdb_string_t *)duckdb_vector_get_data(type_vec);
+
+				for (idx_t row = 0; row < row_count; row++) {
+					char *name = GetString(name_data, row);
+					char *type = GetString(type_data, row);
+					if (name && type) {
+						AddFunction(bind, name, type);
+					}
+					if (name) free(name);
+					if (type) free(type);
+				}
+				duckdb_destroy_data_chunk(&chunk);
 			}
 			duckdb_destroy_result(&result);
 		}
-		free(escaped_query);
+		free(query);
 	}
 
 	free(sql);
@@ -2092,103 +2060,6 @@ static void AddWhereCondition(ParseWhereBindData *bind, const char *col, const c
 	bind->count++;
 }
 
-static const char *CompareTypeToOperator(const char *type) {
-	if (strstr(type, "GREATERTHAN")) return ">";
-	if (strstr(type, "LESSTHAN")) return "<";
-	if (strstr(type, "EQUAL")) return "=";
-	if (strstr(type, "NOTEQUAL")) return "!=";
-	if (strstr(type, "GREATERTHANOREQUALTO")) return ">=";
-	if (strstr(type, "LESSTHANOREQUALTO")) return "<=";
-	return type;
-}
-
-static void ExtractWhereFromJson(ParseWhereBindData *bind, const char *json) {
-	const char *filter_pos = strstr(json, "\"type\":\"LOGICAL_FILTER\"");
-	if (!filter_pos) return;
-
-	// Find expressions array after LOGICAL_FILTER
-	const char *expr_start = strstr(filter_pos, "\"expressions\":[");
-	if (!expr_start) return;
-
-	// Look for BOUND_COMPARISON expressions
-	const char *pos = expr_start;
-	while ((pos = strstr(pos, "\"expression_class\":\"BOUND_COMPARISON\"")) != NULL) {
-		// Get comparison type
-		const char *type_start = strstr(pos, "\"type\":\"");
-		char op[64] = "?";
-		if (type_start && type_start < pos + 200) {
-			type_start += 8;
-			const char *type_end = strchr(type_start, '"');
-			if (type_end) {
-				size_t len = type_end - type_start;
-				char type_buf[128];
-				if (len < sizeof(type_buf)) {
-					memcpy(type_buf, type_start, len);
-					type_buf[len] = '\0';
-					strncpy(op, CompareTypeToOperator(type_buf), sizeof(op) - 1);
-				}
-			}
-		}
-
-		// Get left side (column name from alias)
-		char col[256] = "?";
-		const char *left_start = strstr(pos, "\"left\":{");
-		if (left_start && left_start < pos + 500) {
-			const char *alias_start = strstr(left_start, "\"alias\":\"");
-			if (alias_start && alias_start < left_start + 300) {
-				alias_start += 9;
-				const char *alias_end = strchr(alias_start, '"');
-				if (alias_end) {
-					size_t len = alias_end - alias_start;
-					if (len < sizeof(col)) {
-						memcpy(col, alias_start, len);
-						col[len] = '\0';
-					}
-				}
-			}
-		}
-
-		// Get right side (value)
-		char val[256] = "?";
-		const char *right_start = strstr(pos, "\"right\":{");
-		if (right_start && right_start < pos + 1000) {
-			const char *val_start = strstr(right_start, "\"value\":");
-			if (val_start && val_start < right_start + 500) {
-				val_start += 8;
-				// Skip to the actual value
-				const char *inner_val = strstr(val_start, "\"value\":");
-				if (inner_val && inner_val < val_start + 200) {
-					inner_val += 8;
-					// Extract number or string value
-					if (*inner_val == '"') {
-						inner_val++;
-						const char *end = strchr(inner_val, '"');
-						if (end) {
-							size_t len = end - inner_val;
-							if (len < sizeof(val)) {
-								memcpy(val, inner_val, len);
-								val[len] = '\0';
-							}
-						}
-					} else {
-						// Numeric value
-						const char *end = inner_val;
-						while (*end && *end != ',' && *end != '}') end++;
-						size_t len = end - inner_val;
-						if (len < sizeof(val)) {
-							memcpy(val, inner_val, len);
-							val[len] = '\0';
-						}
-					}
-				}
-			}
-		}
-
-		AddWhereCondition(bind, col, op, val);
-		pos++;
-	}
-}
-
 static void ParseWhereBind(duckdb_bind_info info) {
 	ParseWhereBindData *bind = (ParseWhereBindData *)malloc(sizeof(ParseWhereBindData));
 	memset(bind, 0, sizeof(ParseWhereBindData));
@@ -2200,31 +2071,74 @@ static void ParseWhereBind(duckdb_bind_info info) {
 	if (duckdb_open(NULL, &bind->db) == DuckDBSuccess &&
 	    duckdb_connect(bind->db, &bind->conn) == DuckDBSuccess) {
 
+		// Build query that uses JSON functions to extract WHERE conditions
 		size_t sql_len = strlen(sql);
-		size_t escaped_size = sql_len * 2 + 100;
-		char *escaped_query = (char *)malloc(escaped_size);
+		size_t query_size = sql_len * 2 + 1000;
+		char *query = (char *)malloc(query_size);
 		size_t j = 0;
-		j += snprintf(escaped_query + j, escaped_size - j, "SELECT json_serialize_plan('");
-		for (size_t i = 0; i < sql_len && j < escaped_size - 10; i++) {
+		j += snprintf(query + j, query_size - j,
+			"WITH plan AS (SELECT json_serialize_plan('");
+		for (size_t i = 0; i < sql_len && j < query_size - 500; i++) {
 			if (sql[i] == '\'') {
-				escaped_query[j++] = '\'';
-				escaped_query[j++] = '\'';
+				query[j++] = '\'';
+				query[j++] = '\'';
 			} else {
-				escaped_query[j++] = sql[i];
+				query[j++] = sql[i];
 			}
 		}
-		j += snprintf(escaped_query + j, escaped_size - j, "')");
+		j += snprintf(query + j, query_size - j,
+			"') as j) "
+			"SELECT "
+			"  COALESCE(json_extract_string(t.value, '$.left.alias'), '') as col, "
+			"  CASE json_extract_string(t.value, '$.type') "
+			"    WHEN 'COMPARE_GREATERTHAN' THEN '>' "
+			"    WHEN 'COMPARE_LESSTHAN' THEN '<' "
+			"    WHEN 'COMPARE_EQUAL' THEN '=' "
+			"    WHEN 'COMPARE_NOTEQUAL' THEN '!=' "
+			"    WHEN 'COMPARE_GREATERTHANOREQUALTO' THEN '>=' "
+			"    WHEN 'COMPARE_LESSTHANOREQUALTO' THEN '<=' "
+			"    ELSE json_extract_string(t.value, '$.type') "
+			"  END as op, "
+			"  COALESCE("
+			"    json_extract_string(t.value, '$.right.child.value.value')::VARCHAR, "
+			"    json_extract(t.value, '$.right.child.value.value')::VARCHAR, "
+			"    ''"
+			"  ) as val "
+			"FROM plan, json_tree(j) t "
+			"WHERE json_extract_string(t.value, '$.expression_class') = 'BOUND_COMPARISON'");
 
 		duckdb_result result;
-		if (duckdb_query(bind->conn, escaped_query, &result) == DuckDBSuccess) {
-			char *plan_json = GetResultString(&result);
-			if (plan_json) {
-				ExtractWhereFromJson(bind, plan_json);
-				free(plan_json);
+		if (duckdb_query(bind->conn, query, &result) == DuckDBSuccess) {
+			duckdb_data_chunk chunk;
+			while ((chunk = duckdb_fetch_chunk(result)) != NULL) {
+				idx_t row_count = duckdb_data_chunk_get_size(chunk);
+				if (row_count == 0) {
+					duckdb_destroy_data_chunk(&chunk);
+					break;
+				}
+				duckdb_vector col_vec = duckdb_data_chunk_get_vector(chunk, 0);
+				duckdb_vector op_vec = duckdb_data_chunk_get_vector(chunk, 1);
+				duckdb_vector val_vec = duckdb_data_chunk_get_vector(chunk, 2);
+				duckdb_string_t *col_data = (duckdb_string_t *)duckdb_vector_get_data(col_vec);
+				duckdb_string_t *op_data = (duckdb_string_t *)duckdb_vector_get_data(op_vec);
+				duckdb_string_t *val_data = (duckdb_string_t *)duckdb_vector_get_data(val_vec);
+
+				for (idx_t row = 0; row < row_count; row++) {
+					char *col = GetString(col_data, row);
+					char *op = GetString(op_data, row);
+					char *val = GetString(val_data, row);
+					if (col && op && val) {
+						AddWhereCondition(bind, col, op, val);
+					}
+					if (col) free(col);
+					if (op) free(op);
+					if (val) free(val);
+				}
+				duckdb_destroy_data_chunk(&chunk);
 			}
 			duckdb_destroy_result(&result);
 		}
-		free(escaped_query);
+		free(query);
 	}
 
 	free(sql);

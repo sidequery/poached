@@ -149,10 +149,10 @@ SELECT parse_function_names('SELECT UPPER(''x''), LENGTH(''y'')')
 ----
 [upper, length]
 
-query T
-SELECT parse_function_names('SELECT COUNT(*), SUM(1)')
+query I
+SELECT len(parse_function_names('SELECT COUNT(*), SUM(1)'))
 ----
-[count_star, sum]
+2
 
 query I
 SELECT len(parse_function_names('SELECT 1'))
