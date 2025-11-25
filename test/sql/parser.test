@@ -1,0 +1,381 @@
+# name: test/sql/parser.test
+# description: test parser extension functions
+# group: [parser]
+
+# Before we load the extension, this will fail
+statement error
+SELECT multiply_numbers_together(1,2);
+----
+Catalog Error: Scalar Function with name multiply_numbers_together does not exist!
+
+# Require statement will ensure the extension is loaded from now on
+require capi_quack
+
+# Confirm the extension works
+query I
+SELECT multiply_numbers_together(5,10)
+----
+50
+
+# =============================================================================
+# SCALAR FUNCTIONS
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# is_valid_sql(query) -> BOOLEAN
+# -----------------------------------------------------------------------------
+
+query I
+SELECT is_valid_sql('SELECT 1')
+----
+true
+
+query I
+SELECT is_valid_sql('SELECT * FROM users')
+----
+true
+
+query I
+SELECT is_valid_sql('SELEC 1')
+----
+false
+
+query I
+SELECT is_valid_sql('SELECT * FROM')
+----
+false
+
+# -----------------------------------------------------------------------------
+# num_statements(query) -> BIGINT
+# -----------------------------------------------------------------------------
+
+query I
+SELECT num_statements('SELECT 1')
+----
+1
+
+query I
+SELECT num_statements('SELECT 1; SELECT 2; SELECT 3')
+----
+3
+
+query I
+SELECT num_statements('SELECT 1; INSERT INTO t VALUES (1); DELETE FROM t')
+----
+3
+
+query I
+SELECT num_statements('INVALID SQL')
+----
+0
+
+# -----------------------------------------------------------------------------
+# sql_error_message(query) -> VARCHAR
+# -----------------------------------------------------------------------------
+
+query I
+SELECT sql_error_message('SELECT 1') IS NULL
+----
+true
+
+query I
+SELECT sql_error_message('SELEC 1') LIKE '%syntax error%'
+----
+true
+
+# -----------------------------------------------------------------------------
+# is_keyword(identifier) -> BOOLEAN
+# -----------------------------------------------------------------------------
+
+query I
+SELECT is_keyword('SELECT')
+----
+true
+
+query I
+SELECT is_keyword('select')
+----
+true
+
+query I
+SELECT is_keyword('FROM')
+----
+true
+
+query I
+SELECT is_keyword('mytable')
+----
+false
+
+query I
+SELECT is_keyword('foo')
+----
+false
+
+# -----------------------------------------------------------------------------
+# sql_strip_comments(query) -> VARCHAR
+# -----------------------------------------------------------------------------
+
+query I
+SELECT length(sql_strip_comments('SELECT 1 -- comment'))
+----
+9
+
+query T
+SELECT sql_strip_comments('SELECT /* block */ 1')
+----
+SELECT  1
+
+query T
+SELECT sql_strip_comments('SELECT ''not--comment''')
+----
+SELECT 'not--comment'
+
+# -----------------------------------------------------------------------------
+# parse_table_names(query) -> VARCHAR[]
+# -----------------------------------------------------------------------------
+
+query I
+SELECT len(parse_table_names('SELECT 1'))
+----
+0
+
+# -----------------------------------------------------------------------------
+# parse_function_names(query) -> VARCHAR[]
+# -----------------------------------------------------------------------------
+
+query I
+SELECT len(parse_function_names('SELECT UPPER(''x''), LENGTH(''y'')'))
+----
+2
+
+query I
+SELECT len(parse_function_names('SELECT COUNT(*), SUM(1)'))
+----
+2
+
+query I
+SELECT len(parse_function_names('SELECT 1'))
+----
+0
+
+# -----------------------------------------------------------------------------
+# sql_parse_json(query) -> VARCHAR (JSON)
+# -----------------------------------------------------------------------------
+
+query I
+SELECT json_extract_string(sql_parse_json('SELECT 1'), '$.error')
+----
+false
+
+query I
+SELECT sql_parse_json('INVALID') LIKE '%error%'
+----
+true
+
+# =============================================================================
+# TABLE FUNCTIONS
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# sql_keywords() -> table(keyword)
+# -----------------------------------------------------------------------------
+
+query I
+SELECT COUNT(*) > 50 FROM sql_keywords()
+----
+true
+
+query I
+SELECT COUNT(*) FROM sql_keywords() WHERE keyword = 'SELECT'
+----
+1
+
+query I
+SELECT COUNT(*) FROM sql_keywords() WHERE keyword = 'FROM'
+----
+1
+
+# -----------------------------------------------------------------------------
+# parse_statements(query) -> table(stmt_index, stmt_type, error, param_count)
+# -----------------------------------------------------------------------------
+
+query ITTI
+SELECT * FROM parse_statements('SELECT 1')
+----
+0	SELECT	NULL	0
+
+query I
+SELECT COUNT(*) FROM parse_statements('SELECT 1; SELECT 2')
+----
+2
+
+query T
+SELECT stmt_type FROM parse_statements('CREATE TABLE t(x INT)')
+----
+CREATE
+
+query T
+SELECT stmt_type FROM parse_statements('SET memory_limit=''1GB''')
+----
+SET
+
+query I
+SELECT param_count FROM parse_statements('SELECT $1, $2, $3')
+----
+3
+
+query T
+SELECT stmt_type FROM parse_statements('INVALID SQL')
+----
+INVALID
+
+query I
+SELECT error IS NOT NULL FROM parse_statements('INVALID SQL')
+----
+true
+
+# -----------------------------------------------------------------------------
+# parse_parameters(query, stmt_index) -> table(param_index, param_name, param_type)
+# -----------------------------------------------------------------------------
+
+query I
+SELECT COUNT(*) FROM parse_parameters('SELECT $1, $2', 0)
+----
+2
+
+query I
+SELECT COUNT(*) FROM parse_parameters('SELECT 1', 0)
+----
+0
+
+# -----------------------------------------------------------------------------
+# parse_columns(query, stmt_index) -> table(col_index, col_name, col_type)
+# -----------------------------------------------------------------------------
+
+query ITT
+SELECT * FROM parse_columns('SELECT 1 AS num, ''hello'' AS str', 0)
+----
+0	num	INTEGER
+1	str	VARCHAR
+
+query I
+SELECT COUNT(*) FROM parse_columns('SELECT 1, 2, 3, 4, 5', 0)
+----
+5
+
+# -----------------------------------------------------------------------------
+# parse_column_types(query, stmt_index) -> table(col_index, col_name, base_type, full_type)
+# -----------------------------------------------------------------------------
+
+query ITTT
+SELECT * FROM parse_column_types('SELECT 1 AS x', 0)
+----
+0	x	INTEGER	INTEGER
+
+query T
+SELECT full_type FROM parse_column_types('SELECT [1,2,3] AS arr', 0)
+----
+INTEGER[]
+
+query T
+SELECT full_type FROM parse_column_types('SELECT {a: 1, b: ''x''} AS s', 0)
+----
+STRUCT(a INTEGER, b VARCHAR)
+
+# -----------------------------------------------------------------------------
+# parse_type_info(query, stmt_index, col_index) -> table(base_type, full_type, ...)
+# -----------------------------------------------------------------------------
+
+query TT
+SELECT base_type, full_type FROM parse_type_info('SELECT 1', 0, 0)
+----
+INTEGER	INTEGER
+
+query TT
+SELECT base_type, full_type FROM parse_type_info('SELECT [1,2,3]', 0, 0)
+----
+LIST	INTEGER[]
+
+# -----------------------------------------------------------------------------
+# tokenize_sql(query) -> table(byte_position, category)
+# -----------------------------------------------------------------------------
+
+query IT
+SELECT * FROM tokenize_sql('SELECT * FROM tbl')
+----
+0	KEYWORD
+7	OPERATOR
+9	KEYWORD
+14	IDENTIFIER
+
+query I
+SELECT COUNT(*) FROM tokenize_sql('SELECT a, b, c FROM t WHERE x > 1')
+----
+12
+
+query T
+SELECT category FROM tokenize_sql('SELECT 123') WHERE byte_position = 7
+----
+NUMERIC_CONSTANT
+
+query T
+SELECT category FROM tokenize_sql('SELECT ''hello''') WHERE byte_position = 7
+----
+STRING_CONSTANT
+
+# -----------------------------------------------------------------------------
+# parse_tables(query) -> table(schema, table, context)
+# -----------------------------------------------------------------------------
+
+# Note: parse_tables requires tables to exist in the in-memory db it creates
+# So we test with queries that don't reference tables
+query I
+SELECT COUNT(*) FROM parse_tables('SELECT 1')
+----
+0
+
+# -----------------------------------------------------------------------------
+# parse_functions(query) -> table(function_name, function_type)
+# -----------------------------------------------------------------------------
+
+query TT
+SELECT * FROM parse_functions('SELECT UPPER(''x'')') ORDER BY function_name
+----
+upper	scalar
+
+query TT
+SELECT * FROM parse_functions('SELECT COUNT(*)') ORDER BY function_name
+----
+count_star	aggregate
+
+query TT
+SELECT * FROM parse_functions('SELECT COUNT(*), SUM(1), LOWER(''X'')') ORDER BY function_name
+----
+count_star	aggregate
+lower	scalar
+sum	aggregate
+
+query I
+SELECT COUNT(*) FROM parse_functions('SELECT 1')
+----
+0
+
+# -----------------------------------------------------------------------------
+# parse_where(query) -> table(column_name, operator, value)
+# -----------------------------------------------------------------------------
+
+query TT
+SELECT operator, value FROM parse_where('SELECT 1 WHERE 1 > 0')
+----
+>	0
+
+query I
+SELECT COUNT(*) FROM parse_where('SELECT 1 WHERE 5 = 5 AND 10 < 20')
+----
+2
+
+query I
+SELECT COUNT(*) FROM parse_where('SELECT 1')
+----
+0

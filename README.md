@@ -1,101 +1,107 @@
-# DuckDB C/C++ extension template
-This is an **experimental** template for C/C++ based extensions that link with the **C Extension API** of DuckDB. Note that this
-is different from https://github.com/duckdb/extension-template, which links against the C++ API of DuckDB.
+# DuckDB Parser Extension
 
-Features:
-- No DuckDB build required
-- CI/CD chain preconfigured
-- (Coming soon) Works with community extensions
+A DuckDB extension that exposes SQL parsing functionality for building IDEs, SQL editors, query analyzers, and other developer tools.
 
-## Cloning
-Clone the repo with submodules
+## Features
 
-```shell
-git clone --recurse-submodules <repo>
+### Tokenization
+- `tokenize_sql(query)` - Returns tokens with byte positions and categories (KEYWORD, IDENTIFIER, OPERATOR, NUMERIC_CONSTANT, STRING_CONSTANT, COMMENT, ERROR). Uses DuckDB's internal tokenizer for accurate syntax highlighting.
+
+### Statement Analysis
+- `parse_statements(query)` - Parse multi-statement SQL, returns statement type, errors, and parameter count
+- `num_statements(query)` - Count statements in a query
+- `is_valid_sql(query)` - Check if SQL is syntactically valid
+- `sql_error_message(query)` - Get parse error message (NULL if valid)
+
+### Schema Introspection
+- `parse_columns(query, stmt_index)` - Get result column names and types
+- `parse_column_types(query, stmt_index)` - Get detailed type info including nested types
+- `parse_type_info(query, stmt_index, col_index)` - Get full type details for a single column
+- `parse_parameters(query, stmt_index)` - Extract prepared statement parameters
+
+### Query Analysis
+- `parse_tables(query)` - Extract table references with schema and context
+- `parse_table_names(query)` - Get table names as array
+- `parse_functions(query)` - Extract function calls with type (scalar/aggregate)
+- `parse_function_names(query)` - Get function names as array
+- `parse_where(query)` - Extract WHERE clause conditions
+
+### Utilities
+- `sql_keywords()` - List all SQL keywords
+- `is_keyword(str)` - Check if string is a keyword
+- `sql_strip_comments(query)` - Remove comments from SQL
+- `sql_parse_json(query)` - Get full query plan as JSON
+
+## Example Usage
+
+```sql
+-- Syntax highlighting
+SELECT * FROM tokenize_sql('SELECT * FROM users WHERE id = 1');
+┌───────────────┬──────────────────┐
+│ byte_position │     category     │
+├───────────────┼──────────────────┤
+│             0 │ KEYWORD          │
+│             7 │ OPERATOR         │
+│             9 │ KEYWORD          │
+│            14 │ IDENTIFIER       │
+│            20 │ KEYWORD          │
+│            26 │ IDENTIFIER       │
+│            29 │ OPERATOR         │
+│            31 │ NUMERIC_CONSTANT │
+└───────────────┴──────────────────┘
+
+-- Validate SQL
+SELECT is_valid_sql('SELECT * FROM');  -- false
+SELECT sql_error_message('SELECT * FROM');  -- Parser Error: ...
+
+-- Extract functions
+SELECT * FROM parse_functions('SELECT COUNT(*), UPPER(name) FROM t');
+┌───────────────┬───────────────┐
+│ function_name │ function_type │
+├───────────────┼───────────────┤
+│ count_star    │ aggregate     │
+│ upper         │ scalar        │
+└───────────────┴───────────────┘
+
+-- Get result schema
+SELECT * FROM parse_columns('SELECT 1 AS num, ''hello'' AS str', 0);
+┌───────────┬──────────┬──────────┐
+│ col_index │ col_name │ col_type │
+├───────────┼──────────┼──────────┤
+│         0 │ num      │ INTEGER  │
+│         1 │ str      │ VARCHAR  │
+└───────────┴──────────┴──────────┘
 ```
-
-## Dependencies
-In principle, compiling this template only requires a C/C++ toolchain. However, this template relies on some additional
-tooling to make life a little easier and to be able to share CI/CD infrastructure with extension templates for other languages:
-
-- Python3
-- Python3-venv
-- [Make](https://www.gnu.org/software/make)
-- CMake
-- Git
-- (Optional) Ninja + ccache
-
-Installing these dependencies will vary per platform:
-- For Linux, these come generally pre-installed or are available through the distro-specific package manager.
-- For MacOS, [homebrew](https://formulae.brew.sh/).
-- For Windows, [chocolatey](https://community.chocolatey.org/).
 
 ## Building
-After installing the dependencies, building is a two-step process. Firstly run:
+
 ```shell
+# Clone with submodules
+git clone --recurse-submodules <repo>
+
+# Configure (sets up Python venv with test dependencies)
 make configure
-```
-This will ensure a Python venv is set up with DuckDB and DuckDB's test runner installed. Additionally, depending on configuration,
-DuckDB will be used to determine the correct platform for which you are compiling.
 
-Then, to build the extension run:
-```shell
-make debug
-```
-This delegates the build process to cargo, which will produce a shared library in `target/debug/<shared_lib_name>`. After this step, 
-a script is run to transform the shared library into a loadable extension by appending a binary footer. The resulting extension is written
-to the `build/debug` directory.
+# Build release
+make release
 
-To create optimized release binaries, simply run `make release` instead.
-
-### Faster builds
-We recommend to install Ninja and Ccache for building as this can have a significant speed boost during development. After installing, ninja can be used 
-by running:
-```shell
-make clean
-GEN=ninja make debug
-```
-
-## Testing
-This extension uses the DuckDB Python client for testing. This should be automatically installed in the `make configure` step.
-The tests themselves are written in the SQLLogicTest format, just like most of DuckDB's tests. A sample test can be found in
-`test/sql/<extension_name>.test`. To run the tests using the *debug* build:
-
-```shell
-make test_debug
-```
-
-or for the *release* build:
-```shell
+# Run tests
 make test_release
 ```
 
-### Version switching
-Testing with different DuckDB versions is really simple:
+## Dependencies
 
-First, run 
-```
-make clean_all
-```
-to ensure the previous `make configure` step is deleted.
+- C/C++ toolchain
+- Python3 + venv
+- Make
+- CMake
+- Git
 
-Then, run 
-```
-DUCKDB_TEST_VERSION=v1.1.2 make configure
-```
-to select a different duckdb version to test with
+## Configuration
 
-Finally, build and test with 
-```
-make debug
-make test_debug
-```
+The `Makefile` controls build settings:
 
-### Using unstable Extension C API functionality
-The DuckDB Extension C API has a stable part and an unstable part. By default, this template only allows usage of the stable
-part of the API. To switch it to allow using the unstable part, take the following steps:
+- `TARGET_DUCKDB_VERSION` - DuckDB version to target (default: v1.4.2)
+- `USE_UNSTABLE_C_API` - Set to 1 for latest API features (pins to exact DuckDB version)
 
-Firstly, set your `TARGET_DUCKDB_VERSION` to your desired in `./Makefile`. Then, run `make update_duckdb_headers` to ensure 
-the headers in `./duckdb_capi` are set to the correct version. (FIXME: this is not yet working properly). 
-
-Finally, set `USE_UNSTABLE_C_API` to 1 in `./Makefile`. That's all!
+When changing versions, run `make update_duckdb_headers` to sync the C API headers.
