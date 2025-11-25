@@ -26,12 +26,17 @@ endif()
 ###
 # Build
 ###
-project(${EXTENSION_NAME} LANGUAGES C)
+project(${EXTENSION_NAME} LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Create Extension library
 set(EXTENSION_SOURCES
         src/add_numbers.c
+        src/parser.c
         src/capi_quack.c
+        src/tokenizer.cpp
 )
 
 if (DUCKDB_WASM_EXTENSION)
@@ -52,3 +57,12 @@ target_include_directories(${EXTENSION_NAME} PRIVATE src/include)
 
 # Include DuckDB C API headers
 target_include_directories(${EXTENSION_NAME} PRIVATE duckdb_capi)
+
+# Include DuckDB C++ headers and link library (for tokenizer)
+find_path(DUCKDB_INCLUDE_DIR duckdb.hpp HINTS /opt/homebrew/include /usr/local/include)
+find_library(DUCKDB_LIBRARY duckdb HINTS /opt/homebrew/lib /usr/local/lib)
+
+if(DUCKDB_INCLUDE_DIR AND DUCKDB_LIBRARY)
+    target_include_directories(${EXTENSION_NAME} PRIVATE ${DUCKDB_INCLUDE_DIR})
+    target_link_libraries(${EXTENSION_NAME} PRIVATE ${DUCKDB_LIBRARY})
+endif()
