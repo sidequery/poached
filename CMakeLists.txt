@@ -121,22 +121,40 @@ if(NOT DUCKDB_FOUND)
     endif()
 
     if(DUCKDB_LIB_URL)
-        FetchContent_Declare(
-            duckdb_lib
-            URL ${DUCKDB_LIB_URL}
-            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-        )
-        FetchContent_MakeAvailable(duckdb_lib)
+        set(DUCKDB_LIB_DIR "${CMAKE_BINARY_DIR}/_deps/duckdb_lib")
+        set(DUCKDB_LIB_ZIP "${DUCKDB_LIB_DIR}/libduckdb.zip")
+
+        if(NOT EXISTS "${DUCKDB_LIB_DIR}/${DUCKDB_LIB_NAME}")
+            file(MAKE_DIRECTORY ${DUCKDB_LIB_DIR})
+            message(STATUS "Downloading ${DUCKDB_LIB_URL}")
+            file(DOWNLOAD ${DUCKDB_LIB_URL} ${DUCKDB_LIB_ZIP}
+                STATUS DOWNLOAD_STATUS
+                SHOW_PROGRESS
+            )
+            list(GET DOWNLOAD_STATUS 0 STATUS_CODE)
+            if(STATUS_CODE EQUAL 0)
+                execute_process(
+                    COMMAND ${CMAKE_COMMAND} -E tar xf ${DUCKDB_LIB_ZIP}
+                    WORKING_DIRECTORY ${DUCKDB_LIB_DIR}
+                )
+            else()
+                list(GET DOWNLOAD_STATUS 1 ERROR_MSG)
+                message(WARNING "Failed to download libduckdb: ${ERROR_MSG}")
+            endif()
+        endif()
 
         find_library(DUCKDB_DOWNLOADED_LIB
-            NAMES duckdb duckdb.lib libduckdb
-            PATHS ${duckdb_lib_SOURCE_DIR}
+            NAMES duckdb libduckdb
+            PATHS ${DUCKDB_LIB_DIR}
             NO_DEFAULT_PATH
         )
         if(DUCKDB_DOWNLOADED_LIB)
             message(STATUS "Using downloaded DuckDB: ${DUCKDB_DOWNLOADED_LIB}")
             target_link_libraries(${EXTENSION_NAME} PRIVATE ${DUCKDB_DOWNLOADED_LIB})
             set(DUCKDB_FOUND TRUE)
+        else()
+            message(STATUS "Contents of ${DUCKDB_LIB_DIR}:")
+            execute_process(COMMAND ${CMAKE_COMMAND} -E dir ${DUCKDB_LIB_DIR})
         endif()
     endif()
 endif()
