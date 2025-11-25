@@ -49,9 +49,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Create Extension library
 set(EXTENSION_SOURCES
-        src/add_numbers.c
+        src/extension.c
         src/parser.c
-        src/capi_quack.c
         src/tokenizer.cpp
 )
 

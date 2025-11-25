@@ -2,20 +2,7 @@
 # description: test parser extension functions
 # group: [parser]
 
-# Before we load the extension, this will fail
-statement error
-SELECT multiply_numbers_together(1,2);
-----
-Catalog Error: Scalar Function with name multiply_numbers_together does not exist!
-
-# Require statement will ensure the extension is loaded from now on
 require capi_quack
-
-# Confirm the extension works
-query I
-SELECT multiply_numbers_together(5,10)
-----
-50
 
 # =============================================================================
 # SCALAR FUNCTIONS
@@ -135,29 +122,29 @@ SELECT 'not--comment'
 # parse_table_names(query) -> VARCHAR[]
 # -----------------------------------------------------------------------------
 
-query I
-SELECT len(parse_table_names('SELECT 1'))
+query T
+SELECT parse_table_names('SELECT 1')
 ----
-0
+[]
 
 # -----------------------------------------------------------------------------
 # parse_function_names(query) -> VARCHAR[]
 # -----------------------------------------------------------------------------
 
 query I
-SELECT len(parse_function_names('SELECT UPPER(''x''), LENGTH(''y'')'))
+SELECT list_sort(parse_function_names('SELECT UPPER(''x''), LENGTH(''y'')'))
 ----
-2
+[length, upper]
 
 query I
-SELECT len(parse_function_names('SELECT COUNT(*), SUM(1)'))
+SELECT list_sort(parse_function_names('SELECT COUNT(*), SUM(1)'))
 ----
-2
+[count_star, sum]
 
-query I
-SELECT len(parse_function_names('SELECT 1'))
+query T
+SELECT parse_function_names('SELECT 1')
 ----
-0
+[]
 
 # -----------------------------------------------------------------------------
 # sql_parse_json(query) -> VARCHAR (JSON)
@@ -186,15 +173,20 @@ SELECT COUNT(*) > 50 FROM sql_keywords()
 ----
 true
 
-query I
-SELECT COUNT(*) FROM sql_keywords() WHERE keyword = 'SELECT'
+query T
+SELECT keyword FROM sql_keywords() WHERE keyword = 'SELECT'
 ----
-1
+SELECT
 
-query I
-SELECT COUNT(*) FROM sql_keywords() WHERE keyword = 'FROM'
+query T
+SELECT keyword FROM sql_keywords() WHERE keyword = 'FROM'
 ----
-1
+FROM
+
+query T
+SELECT keyword FROM sql_keywords() WHERE keyword = 'WHERE'
+----
+WHERE
 
 # -----------------------------------------------------------------------------
 # parse_statements(query) -> table(stmt_index, stmt_type, error, param_count)
@@ -205,10 +197,11 @@ SELECT * FROM parse_statements('SELECT 1')
 ----
 0	SELECT	NULL	0
 
-query I
-SELECT COUNT(*) FROM parse_statements('SELECT 1; SELECT 2')
+query IT
+SELECT stmt_index, stmt_type FROM parse_statements('SELECT 1; SELECT 2') ORDER BY stmt_index
 ----
-2
+0	SELECT
+1	SELECT
 
 query T
 SELECT stmt_type FROM parse_statements('CREATE TABLE t(x INT)')
@@ -239,10 +232,11 @@ true
 # parse_parameters(query, stmt_index) -> table(param_index, param_name, param_type)
 # -----------------------------------------------------------------------------
 
-query I
-SELECT COUNT(*) FROM parse_parameters('SELECT $1, $2', 0)
+query IT
+SELECT param_index, param_name FROM parse_parameters('SELECT $1, $2', 0) ORDER BY param_index
 ----
-2
+0	1
+1	2
 
 query I
 SELECT COUNT(*) FROM parse_parameters('SELECT 1', 0)
@@ -259,10 +253,14 @@ SELECT * FROM parse_columns('SELECT 1 AS num, ''hello'' AS str', 0)
 0	num	INTEGER
 1	str	VARCHAR
 
-query I
-SELECT COUNT(*) FROM parse_columns('SELECT 1, 2, 3, 4, 5', 0)
+query IT
+SELECT col_index, col_type FROM parse_columns('SELECT 1, 2, 3, 4, 5', 0) ORDER BY col_index
 ----
-5
+0	INTEGER
+1	INTEGER
+2	INTEGER
+3	INTEGER
+4	INTEGER
 
 # -----------------------------------------------------------------------------
 # parse_column_types(query, stmt_index) -> table(col_index, col_name, base_type, full_type)
@@ -370,10 +368,11 @@ SELECT operator, value FROM parse_where('SELECT 1 WHERE 1 > 0')
 ----
 >	0
 
-query I
-SELECT COUNT(*) FROM parse_where('SELECT 1 WHERE 5 = 5 AND 10 < 20')
+query TT
+SELECT operator, value FROM parse_where('SELECT 1 WHERE 5 = 5 AND 10 < 20') ORDER BY value
 ----
-2
+<	20
+=	5
 
 query I
 SELECT COUNT(*) FROM parse_where('SELECT 1')
