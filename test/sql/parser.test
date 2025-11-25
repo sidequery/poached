@@ -2,7 +2,7 @@
 # description: test parser extension functions
 # group: [parser]
 
-require capi_quack
+require poached
 
 # =============================================================================
 # SCALAR FUNCTIONS
