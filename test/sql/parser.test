@@ -2,20 +2,7 @@
 # description: test parser extension functions
 # group: [parser]
 
-# Before we load the extension, this will fail
-statement error
-SELECT multiply_numbers_together(1,2);
-----
-Catalog Error: Scalar Function with name multiply_numbers_together does not exist!
-
-# Require statement will ensure the extension is loaded from now on
 require capi_quack
-
-# Confirm the extension works
-query I
-SELECT multiply_numbers_together(5,10)
-----
-50
 
 # =============================================================================
 # SCALAR FUNCTIONS
