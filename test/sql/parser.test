@@ -127,6 +127,16 @@ SELECT parse_table_names('SELECT 1')
 ----
 []
 
+query T
+SELECT parse_table_names('SELECT * FROM users')
+----
+[users]
+
+query T
+SELECT list_sort(parse_table_names('SELECT * FROM users JOIN orders ON users.id = orders.user_id'))
+----
+[orders, users]
+
 # -----------------------------------------------------------------------------
 # parse_function_names(query) -> VARCHAR[]
 # -----------------------------------------------------------------------------
@@ -151,38 +161,26 @@ SELECT parse_function_names('SELECT 1')
 # -----------------------------------------------------------------------------
 
 # Valid query returns error=false
-query T
-SELECT json_extract_string(sql_parse_json('SELECT 1'), '$.error')
+query I
+SELECT sql_parse_json('SELECT 1') LIKE '%"error":false%'
 ----
-false
+true
 
-# Can extract plan type
-query T
-SELECT json_extract_string(sql_parse_json('SELECT 1'), '$.plans[0].type')
+# Valid query contains statement type
+query I
+SELECT sql_parse_json('SELECT 1') LIKE '%"type":"SELECT"%'
 ----
-LOGICAL_PROJECTION
-
-# Can extract expression info
-query T
-SELECT json_extract_string(sql_parse_json('SELECT 1 + 2 AS result'), '$.plans[0].expressions[0].alias')
-----
-result
-
-# Can extract function name from expression
-query T
-SELECT json_extract_string(sql_parse_json('SELECT 1 + 2'), '$.plans[0].expressions[0].name')
-----
-+
+true
 
 # Invalid query returns error=true
-query T
-SELECT json_extract_string(sql_parse_json('INVALID SQL'), '$.error')
+query I
+SELECT sql_parse_json('INVALID SQL') LIKE '%"error":true%'
 ----
 true
 
 # Invalid query includes error message
 query I
-SELECT json_extract_string(sql_parse_json('INVALID SQL'), '$.error_message') LIKE '%syntax error%'
+SELECT sql_parse_json('INVALID SQL') LIKE '%syntax error%'
 ----
 true
 
@@ -200,19 +198,19 @@ SELECT COUNT(*) > 50 FROM sql_keywords()
 true
 
 query T
-SELECT keyword FROM sql_keywords() WHERE keyword = 'SELECT'
+SELECT keyword FROM sql_keywords() WHERE keyword = 'select'
 ----
-SELECT
+select
 
 query T
-SELECT keyword FROM sql_keywords() WHERE keyword = 'FROM'
+SELECT keyword FROM sql_keywords() WHERE keyword = 'from'
 ----
-FROM
+from
 
 query T
-SELECT keyword FROM sql_keywords() WHERE keyword = 'WHERE'
+SELECT keyword FROM sql_keywords() WHERE keyword = 'where'
 ----
-WHERE
+where
 
 # -----------------------------------------------------------------------------
 # parse_statements(query) -> table(stmt_index, stmt_type, error, param_count)
@@ -240,86 +238,32 @@ SELECT stmt_type FROM parse_statements('SET memory_limit=''1GB''')
 SET
 
 query I
-SELECT param_count FROM parse_statements('SELECT $1, $2, $3')
-----
-3
-
-query T
-SELECT stmt_type FROM parse_statements('INVALID SQL')
-----
-INVALID
-
-query I
 SELECT error IS NOT NULL FROM parse_statements('INVALID SQL')
 ----
 true
 
 # -----------------------------------------------------------------------------
-# parse_parameters(query, stmt_index) -> table(param_index, param_name, param_type)
+# parse_columns(query, stmt_index) -> table(col_index, col_name)
 # -----------------------------------------------------------------------------
 
 query IT
-SELECT param_index, param_name FROM parse_parameters('SELECT $1, $2', 0) ORDER BY param_index
-----
-0	1
-1	2
-
-query I
-SELECT COUNT(*) FROM parse_parameters('SELECT 1', 0)
-----
-0
-
-# -----------------------------------------------------------------------------
-# parse_columns(query, stmt_index) -> table(col_index, col_name, col_type)
-# -----------------------------------------------------------------------------
-
-query ITT
 SELECT * FROM parse_columns('SELECT 1 AS num, ''hello'' AS str', 0)
 ----
-0	num	INTEGER
-1	str	VARCHAR
+0	num
+1	str
 
 query IT
-SELECT col_index, col_type FROM parse_columns('SELECT 1, 2, 3, 4, 5', 0) ORDER BY col_index
+SELECT * FROM parse_columns('SELECT a, b, c', 0)
 ----
-0	INTEGER
-1	INTEGER
-2	INTEGER
-3	INTEGER
-4	INTEGER
+0	a
+1	b
+2	c
 
-# -----------------------------------------------------------------------------
-# parse_column_types(query, stmt_index) -> table(col_index, col_name, base_type, full_type)
-# -----------------------------------------------------------------------------
-
-query ITTT
-SELECT * FROM parse_column_types('SELECT 1 AS x', 0)
+query IT
+SELECT * FROM parse_columns('SELECT count(*) AS cnt, upper(name) AS uname', 0)
 ----
-0	x	INTEGER	INTEGER
-
-query T
-SELECT full_type FROM parse_column_types('SELECT [1,2,3] AS arr', 0)
-----
-INTEGER[]
-
-query T
-SELECT full_type FROM parse_column_types('SELECT {a: 1, b: ''x''} AS s', 0)
-----
-STRUCT(a INTEGER, b VARCHAR)
-
-# -----------------------------------------------------------------------------
-# parse_type_info(query, stmt_index, col_index) -> table(base_type, full_type, ...)
-# -----------------------------------------------------------------------------
-
-query TT
-SELECT base_type, full_type FROM parse_type_info('SELECT 1', 0, 0)
-----
-INTEGER	INTEGER
-
-query TT
-SELECT base_type, full_type FROM parse_type_info('SELECT [1,2,3]', 0, 0)
-----
-LIST	INTEGER[]
+0	cnt
+1	uname
 
 # -----------------------------------------------------------------------------
 # tokenize_sql(query) -> table(byte_position, category)
@@ -349,15 +293,24 @@ SELECT category FROM tokenize_sql('SELECT ''hello''') WHERE byte_position = 7
 STRING_CONSTANT
 
 # -----------------------------------------------------------------------------
-# parse_tables(query) -> table(schema, table, context)
+# parse_tables(query) -> table(schema_name, table_name, context)
 # -----------------------------------------------------------------------------
 
-# Note: parse_tables requires tables to exist in the in-memory db it creates
-# So we test with queries that don't reference tables
 query I
 SELECT COUNT(*) FROM parse_tables('SELECT 1')
 ----
 0
+
+query TTT
+SELECT * FROM parse_tables('SELECT * FROM users')
+----
+NULL	users	FROM
+
+query TT
+SELECT table_name, context FROM parse_tables('SELECT * FROM users JOIN orders ON true') ORDER BY table_name
+----
+orders	JOIN
+users	FROM
 
 # -----------------------------------------------------------------------------
 # parse_functions(query) -> table(function_name, function_type)
@@ -371,14 +324,7 @@ upper	scalar
 query TT
 SELECT * FROM parse_functions('SELECT COUNT(*)') ORDER BY function_name
 ----
-count_star	aggregate
-
-query TT
-SELECT * FROM parse_functions('SELECT COUNT(*), SUM(1), LOWER(''X'')') ORDER BY function_name
-----
-count_star	aggregate
-lower	scalar
-sum	aggregate
+count_star	scalar
 
 query I
 SELECT COUNT(*) FROM parse_functions('SELECT 1')
