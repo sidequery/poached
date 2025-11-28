@@ -15,14 +15,11 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/main/client_context.hpp"
-#include "duckdb/main/database.hpp"
-#include "duckdb/main/connection.hpp"
-#include "duckdb/planner/planner.hpp"
-#include "duckdb/planner/bound_result_modifier.hpp"
 
 #include <cstring>
 #include <sstream>
+#include <unordered_set>
+#include <algorithm>
 
 namespace duckdb {
 
@@ -445,6 +442,28 @@ struct FunctionRef {
 	string type; // "scalar" or "aggregate"
 };
 
+static bool IsAggregateFunction(const string &name) {
+	// Common aggregate functions
+	static const unordered_set<string> aggregates = {
+		"count", "count_star", "sum", "avg", "min", "max",
+		"first", "last", "any_value", "arbitrary",
+		"stddev", "stddev_pop", "stddev_samp",
+		"variance", "var_pop", "var_samp",
+		"covar_pop", "covar_samp", "corr",
+		"string_agg", "group_concat", "listagg",
+		"array_agg", "list", "histogram",
+		"approx_count_distinct", "approx_quantile",
+		"median", "quantile", "quantile_cont", "quantile_disc",
+		"mode", "entropy", "kurtosis", "skewness",
+		"regr_avgx", "regr_avgy", "regr_count", "regr_intercept",
+		"regr_r2", "regr_slope", "regr_sxx", "regr_sxy", "regr_syy",
+		"bit_and", "bit_or", "bit_xor", "bool_and", "bool_or"
+	};
+	string lower_name = name;
+	std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
+	return aggregates.find(lower_name) != aggregates.end();
+}
+
 static void ExtractFunctionsFromExpression(ParsedExpression *expr, vector<FunctionRef> &functions) {
 	if (!expr) return;
 
@@ -452,7 +471,7 @@ static void ExtractFunctionsFromExpression(ParsedExpression *expr, vector<Functi
 		auto &fn = expr->Cast<FunctionExpression>();
 		FunctionRef f;
 		f.name = fn.function_name;
-		f.type = fn.is_operator ? "operator" : (fn.distinct ? "aggregate" : "scalar");
+		f.type = fn.is_operator ? "operator" : (IsAggregateFunction(fn.function_name) ? "aggregate" : "scalar");
 		functions.push_back(f);
 		// Recurse into function arguments
 		for (auto &child : fn.children) {
@@ -770,7 +789,7 @@ static void SqlStripCommentsFunc(DataChunk &args, ExpressionState &state, Vector
 }
 
 // ============================================================================
-// parse_columns(query, stmt_index) - Get SELECT column names from AST
+// parse_columns(query, stmt_index) - Get SELECT column names
 // ============================================================================
 
 struct ParseColumnsBindData : public TableFunctionData {
@@ -782,31 +801,27 @@ struct ParseColumnsState : public GlobalTableFunctionState {
 	idx_t current_idx = 0;
 };
 
-static void ExtractColumnNames(ParsedExpression *expr, idx_t index, vector<string> &names) {
-	if (!expr) return;
+static string GetExpressionName(ParsedExpression *expr) {
+	if (!expr) return "";
 
-	// Check for alias first
+	// If there's an alias, use it
 	if (!expr->alias.empty()) {
-		names.push_back(expr->alias);
-		return;
+		return expr->alias;
 	}
 
-	// For column references, use the column name
-	if (expr->type == ExpressionType::COLUMN_REF) {
+	// Otherwise, generate a name based on expression type
+	switch (expr->type) {
+	case ExpressionType::COLUMN_REF: {
 		auto &col = expr->Cast<ColumnRefExpression>();
-		names.push_back(col.GetColumnName());
-		return;
+		return col.GetColumnName();
 	}
-
-	// For functions, use function name or generate col_N
-	if (expr->type == ExpressionType::FUNCTION) {
+	case ExpressionType::FUNCTION: {
 		auto &fn = expr->Cast<FunctionExpression>();
-		names.push_back(fn.function_name);
-		return;
+		return fn.function_name;
 	}
-
-	// Default to col_N
-	names.push_back("col" + std::to_string(index));
+	default:
+		return expr->ToString();
+	}
 }
 
 static unique_ptr<FunctionData> ParseColumnsBind(ClientContext &context, TableFunctionBindInput &input,
@@ -821,13 +836,12 @@ static unique_ptr<FunctionData> ParseColumnsBind(ClientContext &context, TableFu
 
 		if (stmt_index < parser.statements.size()) {
 			auto &stmt = parser.statements[stmt_index];
-
 			if (stmt->type == StatementType::SELECT_STATEMENT) {
 				auto &select = stmt->Cast<SelectStatement>();
 				if (select.node && select.node->type == QueryNodeType::SELECT_NODE) {
 					auto &snode = select.node->Cast<SelectNode>();
-					for (idx_t i = 0; i < snode.select_list.size(); i++) {
-						ExtractColumnNames(snode.select_list[i].get(), i, result->col_names);
+					for (auto &expr : snode.select_list) {
+						result->col_names.push_back(GetExpressionName(expr.get()));
 					}
 				}
 			}
@@ -863,8 +877,24 @@ static void ParseColumnsFunc(ClientContext &context, TableFunctionInput &data_p,
 }
 
 // ============================================================================
-// sql_parse_json(query) - Get parse tree as JSON
+// sql_parse_json(query) - Get parse info as JSON
 // ============================================================================
+
+static string EscapeJsonString(const string &s) {
+	string result;
+	result.reserve(s.size());
+	for (char c : s) {
+		switch (c) {
+		case '"': result += "\\\""; break;
+		case '\\': result += "\\\\"; break;
+		case '\n': result += "\\n"; break;
+		case '\r': result += "\\r"; break;
+		case '\t': result += "\\t"; break;
+		default: result += c; break;
+		}
+	}
+	return result;
+}
 
 static void SqlParseJsonFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t query) {
@@ -875,21 +905,20 @@ static void SqlParseJsonFunc(DataChunk &args, ExpressionState &state, Vector &re
 			std::ostringstream json;
 			json << "{\"error\":false,\"statements\":[";
 
-			bool first_stmt = true;
+			bool first = true;
 			for (auto &stmt : parser.statements) {
-				if (!first_stmt) json << ",";
-				first_stmt = false;
+				if (!first) json << ",";
+				first = false;
 
 				json << "{\"type\":\"" << StatementTypeToString(stmt->type) << "\"";
-				json << ",\"query\":\"" << stmt->ToString() << "\"";
-				json << "}";
+				json << ",\"query\":\"" << EscapeJsonString(stmt->ToString()) << "\"}";
 			}
 
 			json << "]}";
 			return StringVector::AddString(result, json.str());
 		} catch (const Exception &e) {
 			std::ostringstream json;
-			json << "{\"error\":true,\"message\":\"" << e.what() << "\"}";
+			json << "{\"error\":true,\"error_message\":\"" << EscapeJsonString(e.what()) << "\"}";
 			return StringVector::AddString(result, json.str());
 		}
 	});

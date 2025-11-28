@@ -324,7 +324,7 @@ upper	scalar
 query TT
 SELECT * FROM parse_functions('SELECT COUNT(*)') ORDER BY function_name
 ----
-count_star	scalar
+count_star	aggregate
 
 query I
 SELECT COUNT(*) FROM parse_functions('SELECT 1')

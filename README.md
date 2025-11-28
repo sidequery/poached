@@ -56,7 +56,7 @@ SELECT * FROM parse_functions('SELECT COUNT(*), UPPER(name) FROM t');
 ┌───────────────┬───────────────┐
 │ function_name │ function_type │
 ├───────────────┼───────────────┤
-│ count_star    │ scalar        │
+│ count_star    │ aggregate     │
 │ upper         │ scalar        │
 └───────────────┴───────────────┘
 
