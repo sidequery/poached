@@ -141,16 +141,26 @@ jobs:
           grep -E "version:|ref:" extensions/poached/description.yml
 
       - name: Create branch and push
+        id: push_branch
         run: |
           cd community-extensions
           BRANCH="poached-${{ inputs.version }}"
-          git checkout -b "$BRANCH"
-          git add extensions/poached/description.yml
-          git commit -m "Update poached to ${{ inputs.version }}"
-          git push origin "$BRANCH"
           echo "branch=$BRANCH" >> $GITHUB_ENV
 
+          # Check if branch exists on remote
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Branch $BRANCH already exists, skipping"
+            echo "skipped=true" >> $GITHUB_OUTPUT
+          else
+            git checkout -b "$BRANCH"
+            git add extensions/poached/description.yml
+            git commit -m "Update poached to ${{ inputs.version }}"
+            git push origin "$BRANCH"
+            echo "skipped=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create PR to upstream
+        if: steps.push_branch.outputs.skipped != 'true'
         env:
           GH_TOKEN: ${{ secrets.COMMUNITY_EXTENSIONS_PAT }}
         run: |
