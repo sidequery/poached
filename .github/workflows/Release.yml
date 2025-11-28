@@ -25,6 +25,8 @@ jobs:
   create-tag:
     name: Create release tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       tag_created: ${{ steps.tag.outputs.created }}
       commit_sha: ${{ steps.sha.outputs.sha }}
