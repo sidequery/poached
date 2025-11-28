@@ -15,6 +15,11 @@ on:
         required: false
         type: boolean
         default: false
+      update_community_extensions:
+        description: 'Update community-extensions fork'
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   create-tag:
@@ -22,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag_created: ${{ steps.tag.outputs.created }}
+      commit_sha: ${{ steps.sha.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,6 +39,10 @@ jobs:
             echo "Error: Version must match format v0.0.0 or v0.0.0-suffix"
             exit 1
           fi
+
+      - name: Get commit SHA
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Check if tag exists
         id: check
@@ -90,3 +100,42 @@ jobs:
           files: |
             artifacts/**/*.duckdb_extension
             artifacts/**/*.duckdb_extension.gz
+
+  update-community-extensions:
+    name: Update community-extensions fork
+    needs: [create-tag, release]
+    if: ${{ inputs.update_community_extensions && !inputs.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone community-extensions fork
+        run: |
+          git clone https://x-access-token:${{ secrets.COMMUNITY_EXTENSIONS_PAT }}@github.com/nicosuave/community-extensions.git
+          cd community-extensions
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update description.yml
+        run: |
+          cd community-extensions
+          VERSION="${{ inputs.version }}"
+          VERSION_NUM="${VERSION#v}"  # Strip leading 'v'
+          COMMIT_SHA="${{ needs.create-tag.outputs.commit_sha }}"
+
+          # Update version and ref in description.yml
+          sed -i "s/^  version: .*/  version: ${VERSION_NUM}/" extensions/poached/description.yml
+          sed -i "s/^  ref: .*/  ref: ${COMMIT_SHA}/" extensions/poached/description.yml
+
+          echo "Updated description.yml:"
+          grep -E "version:|ref:" extensions/poached/description.yml
+
+      - name: Create branch and push
+        run: |
+          cd community-extensions
+          BRANCH="poached-${{ inputs.version }}"
+          git checkout -b "$BRANCH"
+          git add extensions/poached/description.yml
+          git commit -m "Update poached to ${{ inputs.version }}"
+          git push origin "$BRANCH"
+          echo "Created branch: $BRANCH"
+          echo ""
+          echo "Create PR at: https://github.com/duckdb/community-extensions/compare/main...nicosuave:community-extensions:${BRANCH}"
