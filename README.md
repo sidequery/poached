@@ -78,7 +78,16 @@ SELECT parse_table_names('SELECT * FROM users JOIN orders ON true');
 -- Returns: [users, orders]
 ```
 
-## Building
+## Installation
+
+### From Community Extensions
+
+```sql
+INSTALL poached FROM community;
+LOAD poached;
+```
+
+### Building from Source
 
 ```shell
 # Clone with submodules
