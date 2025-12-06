@@ -5,7 +5,7 @@ A DuckDB extension that exposes SQL parsing functionality for building IDEs, SQL
 ## Features
 
 ### Tokenization
-- `tokenize_sql(query)` - Returns tokens with byte positions and categories (KEYWORD, IDENTIFIER, OPERATOR, NUMERIC_CONSTANT, STRING_CONSTANT, COMMENT, ERROR). Uses DuckDB's internal tokenizer for accurate syntax highlighting.
+- `tokenize_sql(query)` - Returns tokens with byte positions and categories (KEYWORD, IDENTIFIER, OPERATOR, NUMERIC_CONSTANT, STRING_CONSTANT). Uses DuckDB's internal tokenizer for accurate syntax highlighting. Note: comments are stripped before tokenization.
 
 ### Statement Analysis
 - `parse_statements(query)` - Parse multi-statement SQL, returns statement type and errors
@@ -28,6 +28,13 @@ A DuckDB extension that exposes SQL parsing functionality for building IDEs, SQL
 - `is_keyword(str)` - Check if string is a keyword
 - `sql_strip_comments(query)` - Remove comments from SQL
 - `sql_parse_json(query)` - Get parse info as JSON
+
+## Installation
+
+```sql
+INSTALL poached FROM community;
+LOAD poached;
+```
 
 ## Example Usage
 
@@ -78,16 +85,7 @@ SELECT parse_table_names('SELECT * FROM users JOIN orders ON true');
 -- Returns: [users, orders]
 ```
 
-## Installation
-
-### From Community Extensions
-
-```sql
-INSTALL poached FROM community;
-LOAD poached;
-```
-
-### Building from Source
+## Building from Source
 
 ```shell
 # Clone with submodules
