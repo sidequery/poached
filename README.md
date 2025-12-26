@@ -4,30 +4,47 @@ A DuckDB extension that exposes SQL parsing functionality for building IDEs, SQL
 
 ## Features
 
+API shape: `parse_*` returns detailed rows (table functions), while `parse_*_names` returns names-only lists (scalars).
+
 ### Tokenization
-- `tokenize_sql(query)` - Returns tokens with byte positions and categories (KEYWORD, IDENTIFIER, OPERATOR, NUMERIC_CONSTANT, STRING_CONSTANT). Uses DuckDB's internal tokenizer for accurate syntax highlighting. Note: comments are stripped before tokenization.
+| Function | Kind | Returns | Description | Deprecated alias of |
+| --- | --- | --- | --- | --- |
+| `parse_tokens(query)` | table | `byte_position bigint, category varchar` | Returns tokens with byte positions and categories (KEYWORD, IDENTIFIER, OPERATOR, NUMERIC_CONSTANT, STRING_CONSTANT). Uses DuckDB's internal tokenizer for accurate syntax highlighting. Note: comments are stripped before tokenization. | - |
+| `tokenize_sql(query)` | table | `byte_position bigint, category varchar` | Deprecated alias. | `parse_tokens` |
 
 ### Statement Analysis
-- `parse_statements(query)` - Parse multi-statement SQL, returns statement type and errors
-- `num_statements(query)` - Count statements in a query
-- `is_valid_sql(query)` - Check if SQL is syntactically valid
-- `sql_error_message(query)` - Get parse error message (NULL if valid)
+| Function | Kind | Returns | Description | Deprecated alias of |
+| --- | --- | --- | --- | --- |
+| `parse_statements(query)` | table | `stmt_index bigint, stmt_type varchar, error varchar, param_count bigint` | Parse multi-statement SQL, returns statement type and errors. | - |
+| `num_statements(query)` | scalar | `bigint` | Count statements in a query. | - |
+| `is_valid_sql(query)` | scalar | `boolean` | Check if SQL is syntactically valid. | - |
+| `sql_error_message(query)` | scalar | `varchar` (nullable) | Get parse error message (NULL if valid). | - |
 
 ### Schema Introspection
-- `parse_columns(query, stmt_index)` - Get result column names from SELECT list
+| Function | Kind | Returns | Description | Deprecated alias of |
+| --- | --- | --- | --- | --- |
+| `parse_columns(query, stmt_index)` | table | `col_index bigint, col_name varchar` | Get result column names from SELECT list. | - |
+| `parse_column_names(query, stmt_index)` | scalar | `list(varchar)` | Get result column names as array. | - |
 
 ### Query Analysis
-- `parse_tables(query)` - Extract table references with schema and context
-- `parse_table_names(query)` - Get table names as array
-- `parse_functions(query)` - Extract function calls
-- `parse_function_names(query)` - Get function names as array
-- `parse_where(query)` - Extract WHERE clause conditions
+| Function | Kind | Returns | Description | Deprecated alias of |
+| --- | --- | --- | --- | --- |
+| `parse_tables(query)` | table | `schema_name varchar, table_name varchar, context varchar` | Extract table references with schema and context. | - |
+| `parse_table_names(query)` | scalar | `list(varchar)` | Get table names as array. | - |
+| `parse_functions(query)` | table | `function_name varchar, function_type varchar` | Extract function calls. | - |
+| `parse_function_names(query)` | scalar | `list(varchar)` | Get function names as array. | - |
+| `parse_where(query)` | table | `column_name varchar, operator varchar, value varchar` | Extract WHERE clause conditions. | - |
 
 ### Utilities
-- `sql_keywords()` - List all SQL keywords
-- `is_keyword(str)` - Check if string is a keyword
-- `sql_strip_comments(query)` - Remove comments from SQL
-- `sql_parse_json(query)` - Get parse info as JSON
+| Function | Kind | Returns | Description | Deprecated alias of |
+| --- | --- | --- | --- | --- |
+| `parse_keywords()` | table | `keyword varchar` | List all SQL keywords. | - |
+| `sql_keywords()` | table | `keyword varchar` | Deprecated alias. | `parse_keywords` |
+| `parse_keyword_names()` | scalar | `list(varchar)` | Get keyword names as array. | - |
+| `is_keyword(str)` | scalar | `boolean` | Check if string is a keyword. | - |
+| `sql_strip_comments(query)` | scalar | `varchar` | Remove comments from SQL. | - |
+| `parse_sql_json(query)` | scalar | `varchar` (json) | Get parse info as JSON. | - |
+| `sql_parse_json(query)` | scalar | `varchar` (json) | Deprecated alias. | `parse_sql_json` |
 
 ## Installation
 
@@ -40,7 +57,7 @@ LOAD poached;
 
 ```sql
 -- Syntax highlighting
-SELECT * FROM tokenize_sql('SELECT * FROM users WHERE id = 1');
+SELECT * FROM parse_tokens('SELECT * FROM users WHERE id = 1');
 ┌───────────────┬──────────────────┐
 │ byte_position │     category     │
 ├───────────────┼──────────────────┤
@@ -77,13 +94,19 @@ SELECT * FROM parse_columns('SELECT 1 AS num, ''hello'' AS str', 0);
 └───────────┴──────────┘
 
 -- Get parse info as JSON
-SELECT sql_parse_json('SELECT 1 + 2 AS result');
+SELECT parse_sql_json('SELECT 1 + 2 AS result');
 -- Returns: {"error":false,"statements":[{"type":"SELECT","query":"SELECT (1 + 2) AS result"}]}
 
 -- Extract table names
 SELECT parse_table_names('SELECT * FROM users JOIN orders ON true');
 -- Returns: [users, orders]
 ```
+
+## Deprecated aliases (still supported)
+
+- `tokenize_sql` -> `parse_tokens`
+- `sql_keywords` -> `parse_keywords`
+- `sql_parse_json` -> `parse_sql_json`
 
 ## Building from Source
 

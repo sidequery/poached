@@ -157,6 +157,34 @@ SELECT parse_function_names('SELECT 1')
 []
 
 # -----------------------------------------------------------------------------
+# parse_keyword_names() -> VARCHAR[]
+# -----------------------------------------------------------------------------
+
+query I
+SELECT COUNT(*) > 50 FROM UNNEST(parse_keyword_names()) AS t(keyword)
+----
+true
+
+query T
+SELECT keyword FROM UNNEST(parse_keyword_names()) AS t(keyword) WHERE keyword = 'select'
+----
+select
+
+# -----------------------------------------------------------------------------
+# parse_column_names(query, stmt_index) -> VARCHAR[]
+# -----------------------------------------------------------------------------
+
+query T
+SELECT parse_column_names('SELECT 1 AS num, ''hello'' AS str', 0)
+----
+[num, str]
+
+query T
+SELECT parse_column_names('SELECT a, b, c', 0)
+----
+[a, b, c]
+
+# -----------------------------------------------------------------------------
 # sql_parse_json(query) -> VARCHAR (JSON)
 # -----------------------------------------------------------------------------
 
@@ -181,6 +209,11 @@ true
 # Invalid query includes error message
 query I
 SELECT sql_parse_json('INVALID SQL') LIKE '%syntax error%'
+----
+true
+
+query I
+SELECT parse_sql_json('SELECT 1') LIKE '%"error":false%'
 ----
 true
 
@@ -211,6 +244,20 @@ query T
 SELECT keyword FROM sql_keywords() WHERE keyword = 'where'
 ----
 where
+
+# -----------------------------------------------------------------------------
+# parse_keywords() -> table(keyword)
+# -----------------------------------------------------------------------------
+
+query I
+SELECT COUNT(*) > 50 FROM parse_keywords()
+----
+true
+
+query T
+SELECT keyword FROM parse_keywords() WHERE keyword = 'select'
+----
+select
 
 # -----------------------------------------------------------------------------
 # parse_statements(query) -> table(stmt_index, stmt_type, error, param_count)
@@ -291,6 +338,18 @@ query T
 SELECT category FROM tokenize_sql('SELECT ''hello''') WHERE byte_position = 7
 ----
 STRING_CONSTANT
+
+# -----------------------------------------------------------------------------
+# parse_tokens(query) -> table(byte_position, category)
+# -----------------------------------------------------------------------------
+
+query IT
+SELECT * FROM parse_tokens('SELECT * FROM tbl')
+----
+0	KEYWORD
+7	OPERATOR
+9	KEYWORD
+14	IDENTIFIER
 
 # -----------------------------------------------------------------------------
 # parse_tables(query) -> table(schema_name, table_name, context)

@@ -15,6 +15,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/vector_operations/binary_executor.hpp"
 
 #include <cstring>
 #include <sstream>
@@ -189,6 +190,32 @@ static void SqlKeywordsFunc(ClientContext &context, TableFunctionInput &data_p, 
 		state.current_idx++;
 	}
 	output.SetCardinality(count);
+}
+
+// ============================================================================
+// parse_keyword_names() - Returns keyword names as array
+// ============================================================================
+
+static void ParseKeywordNamesFunc(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto keywords = Parser::KeywordList();
+	auto count = args.size();
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto result_data = FlatVector::GetData<list_entry_t>(result);
+	auto &child = ListVector::GetEntry(result);
+	idx_t current_size = ListVector::GetListSize(result);
+	idx_t keyword_count = keywords.size();
+
+	for (idx_t row = 0; row < count; row++) {
+		ListVector::Reserve(result, current_size + keyword_count);
+		auto start = current_size;
+		for (auto &kw : keywords) {
+			child.SetValue(current_size++, Value(kw.name));
+		}
+		result_data[row] = list_entry_t{start, keyword_count};
+	}
+
+	ListVector::SetListSize(result, current_size);
 }
 
 // ============================================================================
@@ -877,6 +904,53 @@ static void ParseColumnsFunc(ClientContext &context, TableFunctionInput &data_p,
 }
 
 // ============================================================================
+// parse_column_names(query, stmt_index) - Get SELECT column names as array
+// ============================================================================
+
+static void ParseColumnNamesFunc(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &query_vec = args.data[0];
+	auto &idx_vec = args.data[1];
+	auto &child = ListVector::GetEntry(result);
+	idx_t current_size = ListVector::GetListSize(result);
+
+	BinaryExecutor::Execute<string_t, int64_t, list_entry_t>(query_vec, idx_vec, result, args.size(),
+	                                                        [&](string_t query, int64_t stmt_index) {
+		                                                        vector<string> col_names;
+		                                                        try {
+			                                                        if (stmt_index >= 0) {
+				                                                        Parser parser;
+				                                                        parser.ParseQuery(query.GetString());
+				                                                        auto idx = static_cast<idx_t>(stmt_index);
+				                                                        if (idx < parser.statements.size()) {
+					                                                        auto &stmt = parser.statements[idx];
+					                                                        if (stmt->type == StatementType::SELECT_STATEMENT) {
+						                                                        auto &select = stmt->Cast<SelectStatement>();
+						                                                        if (select.node && select.node->type == QueryNodeType::SELECT_NODE) {
+							                                                        auto &snode = select.node->Cast<SelectNode>();
+							                                                        for (auto &expr : snode.select_list) {
+								                                                        col_names.push_back(GetExpressionName(expr.get()));
+							                                                        }
+						                                                        }
+					                                                        }
+				                                                        }
+			                                                        }
+		                                                        } catch (...) {
+		                                                        }
+
+		                                                        if (!col_names.empty()) {
+			                                                        ListVector::Reserve(result, current_size + col_names.size());
+			                                                        for (auto &name : col_names) {
+				                                                        child.SetValue(current_size++, Value(name));
+			                                                        }
+		                                                        }
+
+		                                                        return list_entry_t{current_size - col_names.size(), col_names.size()};
+	                                                        });
+
+	ListVector::SetListSize(result, current_size);
+}
+
+// ============================================================================
 // sql_parse_json(query) - Get parse info as JSON
 // ============================================================================
 
@@ -933,8 +1007,14 @@ void RegisterParserFunctions(ExtensionLoader &loader) {
 	TableFunction tokenize_sql("tokenize_sql", {LogicalType::VARCHAR}, TokenizeSqlFunc, TokenizeSqlBind, TokenizeSqlInit);
 	loader.RegisterFunction(tokenize_sql);
 
+	TableFunction parse_tokens("parse_tokens", {LogicalType::VARCHAR}, TokenizeSqlFunc, TokenizeSqlBind, TokenizeSqlInit);
+	loader.RegisterFunction(parse_tokens);
+
 	TableFunction sql_keywords("sql_keywords", {}, SqlKeywordsFunc, SqlKeywordsBind, SqlKeywordsInit);
 	loader.RegisterFunction(sql_keywords);
+
+	TableFunction parse_keywords("parse_keywords", {}, SqlKeywordsFunc, SqlKeywordsBind, SqlKeywordsInit);
+	loader.RegisterFunction(parse_keywords);
 
 	TableFunction parse_statements("parse_statements", {LogicalType::VARCHAR}, ParseStatementsFunc, ParseStatementsBind, ParseStatementsInit);
 	loader.RegisterFunction(parse_statements);
@@ -968,14 +1048,24 @@ void RegisterParserFunctions(ExtensionLoader &loader) {
 	ScalarFunction sql_strip_comments("sql_strip_comments", {LogicalType::VARCHAR}, LogicalType::VARCHAR, SqlStripCommentsFunc);
 	loader.RegisterFunction(sql_strip_comments);
 
+	ScalarFunction parse_sql_json("parse_sql_json", {LogicalType::VARCHAR}, LogicalType::VARCHAR, SqlParseJsonFunc);
+	loader.RegisterFunction(parse_sql_json);
+
 	ScalarFunction sql_parse_json("sql_parse_json", {LogicalType::VARCHAR}, LogicalType::VARCHAR, SqlParseJsonFunc);
 	loader.RegisterFunction(sql_parse_json);
 
 	ScalarFunction parse_table_names("parse_table_names", {LogicalType::VARCHAR}, LogicalType::LIST(LogicalType::VARCHAR), ParseTableNamesFunc);
 	loader.RegisterFunction(parse_table_names);
 
+	ScalarFunction parse_keyword_names("parse_keyword_names", {}, LogicalType::LIST(LogicalType::VARCHAR), ParseKeywordNamesFunc);
+	loader.RegisterFunction(parse_keyword_names);
+
 	ScalarFunction parse_function_names("parse_function_names", {LogicalType::VARCHAR}, LogicalType::LIST(LogicalType::VARCHAR), ParseFunctionNamesFunc);
 	loader.RegisterFunction(parse_function_names);
+
+	ScalarFunction parse_column_names("parse_column_names", {LogicalType::VARCHAR, LogicalType::BIGINT},
+	                                  LogicalType::LIST(LogicalType::VARCHAR), ParseColumnNamesFunc);
+	loader.RegisterFunction(parse_column_names);
 }
 
 } // namespace duckdb
