@@ -39,11 +39,11 @@ API shape: `parse_*` returns detailed rows (table functions), while `parse_*_nam
 | Function | Kind | Returns | Description | Deprecated alias of |
 | --- | --- | --- | --- | --- |
 | `parse_keywords()` | table | `keyword varchar` | List all SQL keywords. | - |
-| `sql_keywords()` | table | `keyword varchar` | Deprecated alias. | `parse_keywords` |
 | `parse_keyword_names()` | scalar | `list(varchar)` | Get keyword names as array. | - |
 | `is_keyword(str)` | scalar | `boolean` | Check if string is a keyword. | - |
 | `sql_strip_comments(query)` | scalar | `varchar` | Remove comments from SQL. | - |
 | `parse_sql_json(query)` | scalar | `varchar` (json) | Get parse info as JSON. | - |
+| `sql_keywords()` | table | `keyword varchar` | Deprecated alias. | `parse_keywords` |
 | `sql_parse_json(query)` | scalar | `varchar` (json) | Deprecated alias. | `parse_sql_json` |
 
 ## Installation
