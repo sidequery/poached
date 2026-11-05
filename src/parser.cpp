@@ -15,6 +15,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector_operations/binary_executor.hpp"
 
 #include <cstring>
@@ -38,7 +39,7 @@ struct TokenizeSqlState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> TokenizeSqlBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<TokenizeSqlBindData>();
 	result->query = input.inputs[0].GetValue<string>();
 	result->tokens = Parser::Tokenize(result->query);
@@ -79,7 +80,7 @@ static void TokenizeSqlFunc(ClientContext &context, TableFunctionInput &data_p, 
 		count++;
 		state.current_idx++;
 	}
-	output.SetCardinality(count);
+	output.SetChildCardinality(count);
 }
 
 // ============================================================================
@@ -89,7 +90,7 @@ static void TokenizeSqlFunc(ClientContext &context, TableFunctionInput &data_p, 
 static void IsValidSqlFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [&](string_t query) {
 		try {
-			Parser parser;
+			auto parser = Parser::GetBuiltinParser();
 			parser.ParseQuery(query.GetString());
 			return true;
 		} catch (...) {
@@ -103,12 +104,13 @@ static void SqlErrorMessageFunc(DataChunk &args, ExpressionState &state, Vector 
 	auto count = args.size();
 
 	UnifiedVectorFormat vdata;
-	input.ToUnifiedFormat(count, vdata);
+	input.ToUnifiedFormat(vdata);
 	auto input_data = UnifiedVectorFormat::GetData<string_t>(vdata);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<string_t>(result);
-	auto &result_validity = FlatVector::Validity(result);
+	FlatVector::SetSize(result, count);
+	auto result_data = FlatVector::GetDataMutable<string_t>(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto idx = vdata.sel->get_index(i);
@@ -119,7 +121,7 @@ static void SqlErrorMessageFunc(DataChunk &args, ExpressionState &state, Vector 
 
 		auto query_str = input_data[idx].GetString();
 		try {
-			Parser parser;
+			auto parser = Parser::GetBuiltinParser();
 			parser.ParseQuery(query_str);
 			// Valid SQL - return NULL
 			result_validity.SetInvalid(i);
@@ -134,7 +136,7 @@ static void SqlErrorMessageFunc(DataChunk &args, ExpressionState &state, Vector 
 static void NumStatementsFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, int64_t>(args.data[0], result, args.size(), [&](string_t query) {
 		try {
-			Parser parser;
+			auto parser = Parser::GetBuiltinParser();
 			parser.ParseQuery(query.GetString());
 			return static_cast<int64_t>(parser.statements.size());
 		} catch (...) {
@@ -162,7 +164,7 @@ struct SqlKeywordsState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> SqlKeywordsBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<SqlKeywordsBindData>();
 	auto keywords = Parser::KeywordList();
 	for (auto &kw : keywords) {
@@ -189,7 +191,7 @@ static void SqlKeywordsFunc(ClientContext &context, TableFunctionInput &data_p, 
 		count++;
 		state.current_idx++;
 	}
-	output.SetCardinality(count);
+	output.SetChildCardinality(count);
 }
 
 // ============================================================================
@@ -201,8 +203,9 @@ static void ParseKeywordNamesFunc(DataChunk &args, ExpressionState &state, Vecto
 	auto count = args.size();
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<list_entry_t>(result);
-	auto &child = ListVector::GetEntry(result);
+	FlatVector::SetSize(result, count);
+	auto result_data = FlatVector::GetDataMutable<list_entry_t>(result);
+	auto &child = ListVector::GetChildMutable(result);
 	idx_t current_size = ListVector::GetListSize(result);
 	idx_t keyword_count = keywords.size();
 
@@ -233,12 +236,12 @@ struct ParseStatementsState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> ParseStatementsBind(ClientContext &context, TableFunctionBindInput &input,
-                                                     vector<LogicalType> &return_types, vector<string> &names) {
+                                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<ParseStatementsBindData>();
 	result->query = input.inputs[0].GetValue<string>();
 
 	try {
-		Parser parser;
+		auto parser = Parser::GetBuiltinParser();
 		parser.ParseQuery(result->query);
 		result->statements = std::move(parser.statements);
 	} catch (const Exception &e) {
@@ -274,7 +277,7 @@ static void ParseStatementsFunc(ClientContext &context, TableFunctionInput &data
 		output.data[3].SetValue(count, Value::BIGINT(0));
 		count++;
 		state.current_idx++;
-		output.SetCardinality(count);
+		output.SetChildCardinality(count);
 		return;
 	}
 
@@ -287,7 +290,7 @@ static void ParseStatementsFunc(ClientContext &context, TableFunctionInput &data
 		count++;
 		state.current_idx++;
 	}
-	output.SetCardinality(count);
+	output.SetChildCardinality(count);
 }
 
 // ============================================================================
@@ -314,8 +317,8 @@ static void ExtractTablesFromQueryNode(QueryNode *node, vector<ExtractedTable> &
 
 	// Handle CTEs
 	for (auto &cte : node->cte_map.map) {
-		if (cte.second && cte.second->query) {
-			ExtractTablesFromQueryNode(cte.second->query->node.get(), tables);
+		if (cte.second && cte.second->query_node) {
+			ExtractTablesFromQueryNode(cte.second->query_node.get(), tables);
 		}
 	}
 }
@@ -327,8 +330,8 @@ static void ExtractTablesFromTableRef(duckdb::TableRef *tref, vector<ExtractedTa
 	case TableReferenceType::BASE_TABLE: {
 		auto &base = tref->Cast<BaseTableRef>();
 		ExtractedTable t;
-		t.schema = base.schema_name;
-		t.table = base.table_name;
+		t.schema = base.GetQualifiedName().Schema().GetIdentifierName();
+		t.table = base.Table().GetIdentifierName();
 		t.context = ctx;
 		tables.push_back(t);
 		break;
@@ -351,8 +354,8 @@ static void ExtractTablesFromTableRef(duckdb::TableRef *tref, vector<ExtractedTa
 		if (func.function) {
 			auto &fn = func.function->Cast<FunctionExpression>();
 			ExtractedTable t;
-			t.schema = fn.schema;
-			t.table = fn.function_name;
+			t.schema = fn.GetQualifiedName().Schema().GetIdentifierName();
+			t.table = fn.FunctionName().GetIdentifierName();
 			t.context = "TABLE_FUNCTION";
 			tables.push_back(t);
 		}
@@ -388,12 +391,12 @@ struct ParseTablesState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> ParseTablesBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<ParseTablesBindData>();
 	string query = input.inputs[0].GetValue<string>();
 
 	try {
-		Parser parser;
+		auto parser = Parser::GetBuiltinParser();
 		parser.ParseQuery(query);
 		for (auto &stmt : parser.statements) {
 			ExtractTablesFromStatement(stmt.get(), result->tables);
@@ -429,7 +432,7 @@ static void ParseTablesFunc(ClientContext &context, TableFunctionInput &data_p, 
 		count++;
 		state.current_idx++;
 	}
-	output.SetCardinality(count);
+	output.SetChildCardinality(count);
 }
 
 // ============================================================================
@@ -440,7 +443,7 @@ static void ParseTableNamesFunc(DataChunk &args, ExpressionState &state, Vector 
 	UnaryExecutor::Execute<string_t, list_entry_t>(args.data[0], result, args.size(), [&](string_t query) {
 		vector<ExtractedTable> tables;
 		try {
-			Parser parser;
+			auto parser = Parser::GetBuiltinParser();
 			parser.ParseQuery(query.GetString());
 			for (auto &stmt : parser.statements) {
 				ExtractTablesFromStatement(stmt.get(), tables);
@@ -448,9 +451,10 @@ static void ParseTableNamesFunc(DataChunk &args, ExpressionState &state, Vector 
 		} catch (...) {
 		}
 
-		auto &child = ListVector::GetEntry(result);
+		auto &child = ListVector::GetChildMutable(result);
 		auto current_size = ListVector::GetListSize(result);
 
+		ListVector::Reserve(result, current_size + tables.size());
 		for (auto &t : tables) {
 			child.SetValue(current_size++, Value(t.table));
 		}
@@ -491,18 +495,18 @@ static bool IsAggregateFunction(const string &name) {
 	return aggregates.find(lower_name) != aggregates.end();
 }
 
-static void ExtractFunctionsFromExpression(ParsedExpression *expr, vector<FunctionRef> &functions) {
+static void ExtractFunctionsFromExpression(const ParsedExpression *expr, vector<FunctionRef> &functions) {
 	if (!expr) return;
 
-	if (expr->type == ExpressionType::FUNCTION) {
+	if (expr->GetExpressionType() == ExpressionType::FUNCTION) {
 		auto &fn = expr->Cast<FunctionExpression>();
 		FunctionRef f;
-		f.name = fn.function_name;
-		f.type = fn.is_operator ? "operator" : (IsAggregateFunction(fn.function_name) ? "aggregate" : "scalar");
+		f.name = fn.FunctionName().GetIdentifierName();
+		f.type = fn.IsOperator() ? "operator" : (IsAggregateFunction(f.name) ? "aggregate" : "scalar");
 		functions.push_back(f);
 		// Recurse into function arguments
-		for (auto &child : fn.children) {
-			ExtractFunctionsFromExpression(child.get(), functions);
+		for (auto &argument : fn.GetArguments()) {
+			ExtractFunctionsFromExpression(&argument.GetExpression(), functions);
 		}
 	}
 }
@@ -549,12 +553,12 @@ struct ParseFunctionsState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> ParseFunctionsBind(ClientContext &context, TableFunctionBindInput &input,
-                                                    vector<LogicalType> &return_types, vector<string> &names) {
+                                                    vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<ParseFunctionsBindData>();
 	string query = input.inputs[0].GetValue<string>();
 
 	try {
-		Parser parser;
+		auto parser = Parser::GetBuiltinParser();
 		parser.ParseQuery(query);
 		for (auto &stmt : parser.statements) {
 			ExtractFunctionsFromStatement(stmt.get(), result->functions);
@@ -587,7 +591,7 @@ static void ParseFunctionsFunc(ClientContext &context, TableFunctionInput &data_
 		count++;
 		state.current_idx++;
 	}
-	output.SetCardinality(count);
+	output.SetChildCardinality(count);
 }
 
 // ============================================================================
@@ -598,7 +602,7 @@ static void ParseFunctionNamesFunc(DataChunk &args, ExpressionState &state, Vect
 	UnaryExecutor::Execute<string_t, list_entry_t>(args.data[0], result, args.size(), [&](string_t query) {
 		vector<FunctionRef> functions;
 		try {
-			Parser parser;
+			auto parser = Parser::GetBuiltinParser();
 			parser.ParseQuery(query.GetString());
 			for (auto &stmt : parser.statements) {
 				ExtractFunctionsFromStatement(stmt.get(), functions);
@@ -606,9 +610,10 @@ static void ParseFunctionNamesFunc(DataChunk &args, ExpressionState &state, Vect
 		} catch (...) {
 		}
 
-		auto &child = ListVector::GetEntry(result);
+		auto &child = ListVector::GetChildMutable(result);
 		auto current_size = ListVector::GetListSize(result);
 
+		ListVector::Reserve(result, current_size + functions.size());
 		for (auto &f : functions) {
 			child.SetValue(current_size++, Value(f.name));
 		}
@@ -642,12 +647,13 @@ static string ComparisonTypeToOperator(ExpressionType type) {
 	}
 }
 
-static void ExtractWhereConditions(ParsedExpression *expr, vector<WhereCondition> &conditions) {
+static void ExtractWhereConditions(const ParsedExpression *expr, vector<WhereCondition> &conditions) {
 	if (!expr) return;
 
-	if (expr->type == ExpressionType::CONJUNCTION_AND || expr->type == ExpressionType::CONJUNCTION_OR) {
+	if (expr->GetExpressionType() == ExpressionType::CONJUNCTION_AND ||
+	    expr->GetExpressionType() == ExpressionType::CONJUNCTION_OR) {
 		auto &conj = expr->Cast<ConjunctionExpression>();
-		for (auto &child : conj.children) {
+		for (auto &child : conj.GetChildren()) {
 			ExtractWhereConditions(child.get(), conditions);
 		}
 		return;
@@ -656,22 +662,24 @@ static void ExtractWhereConditions(ParsedExpression *expr, vector<WhereCondition
 	if (expr->GetExpressionClass() == ExpressionClass::COMPARISON) {
 		auto &cmp = expr->Cast<ComparisonExpression>();
 		WhereCondition cond;
-		cond.op = ComparisonTypeToOperator(cmp.type);
+		cond.op = ComparisonTypeToOperator(cmp.GetExpressionType());
 
 		// Try to get column name from left side
-		if (cmp.left && cmp.left->type == ExpressionType::COLUMN_REF) {
-			auto &col = cmp.left->Cast<ColumnRefExpression>();
-			cond.column_name = col.GetColumnName();
-		} else if (cmp.left) {
-			cond.column_name = cmp.left->ToString();
+		auto &left = cmp.Left();
+		if (left.GetExpressionType() == ExpressionType::COLUMN_REF) {
+			auto &col = left.Cast<ColumnRefExpression>();
+			cond.column_name = col.GetColumnName().GetIdentifierName();
+		} else {
+			cond.column_name = left.ToString();
 		}
 
 		// Try to get value from right side
-		if (cmp.right && cmp.right->type == ExpressionType::VALUE_CONSTANT) {
-			auto &val = cmp.right->Cast<ConstantExpression>();
-			cond.value = val.value.ToString();
-		} else if (cmp.right) {
-			cond.value = cmp.right->ToString();
+		auto &right = cmp.Right();
+		if (right.GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
+			auto &val = right.Cast<ConstantExpression>();
+			cond.value = val.GetLiteral().ToValue().ToString();
+		} else {
+			cond.value = right.ToString();
 		}
 
 		conditions.push_back(cond);
@@ -692,12 +700,12 @@ struct ParseWhereState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> ParseWhereBind(ClientContext &context, TableFunctionBindInput &input,
-                                                vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<ParseWhereBindData>();
 	string query = input.inputs[0].GetValue<string>();
 
 	try {
-		Parser parser;
+		auto parser = Parser::GetBuiltinParser();
 		parser.ParseQuery(query);
 		for (auto &stmt : parser.statements) {
 			if (stmt->type == StatementType::SELECT_STATEMENT) {
@@ -741,7 +749,7 @@ static void ParseWhereFunc(ClientContext &context, TableFunctionInput &data_p, D
 		count++;
 		state.current_idx++;
 	}
-	output.SetCardinality(count);
+	output.SetChildCardinality(count);
 }
 
 // ============================================================================
@@ -828,23 +836,23 @@ struct ParseColumnsState : public GlobalTableFunctionState {
 	idx_t current_idx = 0;
 };
 
-static string GetExpressionName(ParsedExpression *expr) {
+static string GetExpressionName(const ParsedExpression *expr) {
 	if (!expr) return "";
 
 	// If there's an alias, use it
-	if (!expr->alias.empty()) {
-		return expr->alias;
+	if (expr->HasAlias()) {
+		return expr->GetAlias().GetIdentifierName();
 	}
 
 	// Otherwise, generate a name based on expression type
-	switch (expr->type) {
+	switch (expr->GetExpressionType()) {
 	case ExpressionType::COLUMN_REF: {
 		auto &col = expr->Cast<ColumnRefExpression>();
-		return col.GetColumnName();
+		return col.GetColumnName().GetIdentifierName();
 	}
 	case ExpressionType::FUNCTION: {
 		auto &fn = expr->Cast<FunctionExpression>();
-		return fn.function_name;
+		return fn.FunctionName().GetIdentifierName();
 	}
 	default:
 		return expr->ToString();
@@ -852,13 +860,13 @@ static string GetExpressionName(ParsedExpression *expr) {
 }
 
 static unique_ptr<FunctionData> ParseColumnsBind(ClientContext &context, TableFunctionBindInput &input,
-                                                  vector<LogicalType> &return_types, vector<string> &names) {
+                                                  vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<ParseColumnsBindData>();
 	string query = input.inputs[0].GetValue<string>();
 	idx_t stmt_index = input.inputs[1].GetValue<int64_t>();
 
 	try {
-		Parser parser;
+		auto parser = Parser::GetBuiltinParser();
 		parser.ParseQuery(query);
 
 		if (stmt_index < parser.statements.size()) {
@@ -900,7 +908,7 @@ static void ParseColumnsFunc(ClientContext &context, TableFunctionInput &data_p,
 		count++;
 		state.current_idx++;
 	}
-	output.SetCardinality(count);
+	output.SetChildCardinality(count);
 }
 
 // ============================================================================
@@ -910,7 +918,7 @@ static void ParseColumnsFunc(ClientContext &context, TableFunctionInput &data_p,
 static void ParseColumnNamesFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &query_vec = args.data[0];
 	auto &idx_vec = args.data[1];
-	auto &child = ListVector::GetEntry(result);
+	auto &child = ListVector::GetChildMutable(result);
 	idx_t current_size = ListVector::GetListSize(result);
 
 	BinaryExecutor::Execute<string_t, int64_t, list_entry_t>(query_vec, idx_vec, result, args.size(),
@@ -918,7 +926,7 @@ static void ParseColumnNamesFunc(DataChunk &args, ExpressionState &state, Vector
 		                                                        vector<string> col_names;
 		                                                        try {
 			                                                        if (stmt_index >= 0) {
-				                                                        Parser parser;
+				                                                        auto parser = Parser::GetBuiltinParser();
 				                                                        parser.ParseQuery(query.GetString());
 				                                                        auto idx = static_cast<idx_t>(stmt_index);
 				                                                        if (idx < parser.statements.size()) {
@@ -973,7 +981,7 @@ static string EscapeJsonString(const string &s) {
 static void SqlParseJsonFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t query) {
 		try {
-			Parser parser;
+			auto parser = Parser::GetBuiltinParser();
 			parser.ParseQuery(query.GetString());
 
 			std::ostringstream json;
@@ -1036,7 +1044,7 @@ void RegisterParserFunctions(ExtensionLoader &loader) {
 	loader.RegisterFunction(is_valid_sql);
 
 	ScalarFunction sql_error_message("sql_error_message", {LogicalType::VARCHAR}, LogicalType::VARCHAR, SqlErrorMessageFunc);
-	sql_error_message.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	sql_error_message.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	loader.RegisterFunction(sql_error_message);
 
 	ScalarFunction num_statements("num_statements", {LogicalType::VARCHAR}, LogicalType::BIGINT, NumStatementsFunc);

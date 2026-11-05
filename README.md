@@ -110,9 +110,17 @@ SELECT parse_table_names('SELECT * FROM users JOIN orders ON true');
 
 ## Building from Source
 
+The current source targets DuckDB **v2.0.0**. The DuckDB and extension-ci-tools
+submodules are pinned to the revisions used by CI and the release workflow.
+Binaries built against older DuckDB versions must be rebuilt for 2.0.
+
 ```shell
 # Clone with submodules
-git clone --recurse-submodules <repo>
+git clone --recurse-submodules https://github.com/sidequery/poached.git
+cd poached
+
+# After updating an existing checkout
+git submodule update --init --recursive
 
 # Build release
 make release

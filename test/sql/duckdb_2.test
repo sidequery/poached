@@ -1,0 +1,85 @@
+# name: test/sql/duckdb_2.test
+# description: parser and vector API compatibility with DuckDB 2.0
+# group: [parser]
+
+require poached
+
+# Identifier conversions preserve spelling and schema qualification.
+query TTT
+select * from parse_tables('select * from "Sales"."Orders"')
+----
+Sales	Orders	FROM
+
+query TTT
+select * from parse_tables('select * from main.range(3)')
+----
+main	range	TABLE_FUNCTION
+
+# CTEs now own their QueryNode directly.
+query TT rowsort
+select schema_name, table_name from parse_tables('with recent as (select * from sales.orders) select * from recent')
+----
+NULL	recent
+sales	orders
+
+query T
+select parse_column_names('select "CustomerID", 1 as "Total", upper(name) from orders', 0)
+----
+[CustomerID, Total, upper]
+
+# Function arguments use the new argument wrapper, including named arguments.
+query TT rowsort
+select * from parse_functions('select my_func(label := upper(name)), sum(amount), amount + 1 from orders')
+----
++	operator
+my_func	scalar
+sum	aggregate
+upper	scalar
+
+# Literals still return decoded values, without SQL string quoting.
+query TTT rowsort
+select * from parse_where('select * from t where "Name" = ''O''''Brien'' and amount >= 12.50 or n < -3')
+----
+Name	=	O'Brien
+amount	>=	12.50
+n	<	-3
+
+# Non-literal comparison operands still render as SQL expressions.
+query TTT
+select * from parse_where('select * from t where a > b')
+----
+a	>	b
+
+# Flat result vectors must carry their size and preserve per-row NULLs.
+query ITI
+select id, is_valid_sql(sql), sql_error_message(sql) is null
+from (values (1, 'select 1'), (2, 'SELEC 1'), (3, NULL), (4, 'select 2')) inputs(id, sql)
+order by id
+----
+1	true	true
+2	false	false
+3	NULL	true
+4	true	true
+
+# List children must grow beyond one vector's initial capacity.
+query III
+with inputs as (
+    select 'select upper(a), lower(b), length(c) from t' || i::varchar || ' join u on true' as sql
+    from range(3000) r(i)
+)
+select sum(len(parse_table_names(sql))), sum(len(parse_function_names(sql))),
+       sum(len(parse_column_names(sql, 0)))
+from inputs
+----
+6000	9000	9000
+
+# Table functions must emit all chunks, including the final partial chunk.
+query I
+select count(*) from parse_tokens(repeat('select 1; ', 3000))
+----
+9000
+
+query I
+select count(*) from parse_statements(repeat('select 1; ', 3000))
+----
+3000
